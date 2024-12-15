@@ -40,6 +40,8 @@ def main():
             # Validação e separação dos dados
             valid_df, invalid_df, validation_results = validate_ingest(spark, df_processado)
 
+            valid_df.printSchema()
+            invalid_df.printSchema()
 
             # Coleta de métricas após processamento
             metrics_collector.end_collection()
@@ -50,7 +52,7 @@ def main():
             save_metrics(metrics_json)
 
     except Exception as e:
-        logging.error(f"An error occurred: {e}", exc_info=True)
+        logging.error(f"[*] An error occurred: {e}", exc_info=True)
 
 def spark_session():
     """
@@ -64,7 +66,7 @@ def spark_session():
             .getOrCreate()
         return spark
     except Exception as e:
-        logging.error(f"Failed to create SparkSession: {e}", exc_info=True)
+        logging.error(f"[*] Failed to create SparkSession: {e}", exc_info=True)
         raise
 
 def define_schema() -> StructType:
@@ -106,7 +108,7 @@ def save_data(valid_df: DataFrame, invalid_df: DataFrame, path_target: str, path
         save_dataframe(valid_df, path_target, "valido")
         save_dataframe(invalid_df, path_target_fail, "invalido")
     except Exception as e:
-        logging.error(f"Erro ao salvar os dados: {e}", exc_info=True)
+        logging.error(f"[*] Erro ao salvar os dados: {e}", exc_info=True)
         raise
 
 def save_metrics(metrics_json: str):
@@ -116,9 +118,9 @@ def save_metrics(metrics_json: str):
     try:
         metrics_data = json.loads(metrics_json)
         write_to_mongo(metrics_data, "dt_datametrics_compass")
-        logging.info(f"Métricas da aplicação salvas: {metrics_json}")
+        logging.info(f"[*] Métricas da aplicação salvas: {metrics_json}")
     except json.JSONDecodeError as e:
-        logging.error(f"Erro ao processar métricas: {e}", exc_info=True)
+        logging.error(f"[*] Erro ao processar métricas: {e}", exc_info=True)
 
 if __name__ == "__main__":
     main()

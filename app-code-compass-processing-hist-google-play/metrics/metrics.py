@@ -49,7 +49,7 @@ class MetricsCollector:
         Coleta métricas de processamento, validação e recursos utilizados.
         """
         if self.start_time is None or self.end_time is None:
-            raise ValueError("O tempo de início ou término não foi definido corretamente. Verifique a execução dos métodos start_collection e end_collection.")
+            raise ValueError("[*] O tempo de início ou término não foi definido corretamente. Verifique a execução dos métodos start_collection e end_collection.")
 
         total_time = self.end_time - self.start_time
         start_ts = self.start_time.strftime("%Y-%m-%d %H:%M:%S")
@@ -109,7 +109,7 @@ class MetricsCollector:
         return json.dumps(metrics)
 
 def print_validation_results(results: dict):
-    print(f"\nValidação da ingestão concluída para {results['total_records']} registros.\n")
+    print(f"\n[*] Validação da ingestão concluída para {results['total_records']} registros.\n")
     for check, result in results.items():
         if check != "total_records":
             status = "PASSOU" if result["status"] else "FALHOU"
@@ -208,8 +208,21 @@ def validate_ingest(spark: SparkSession, df: DataFrame) -> tuple:
     )
 
     # Se houver duplicatas, adicionamos ao DataFrame de inválidos
+    # Seleciona apenas a coluna "id" do duplicates
+    duplicate_ids = duplicates.select("id")
+
+    # Filtra os registros completos de df com base nos IDs duplicados
+    duplicates_records = df.join(duplicate_ids, on="id", how="inner").select(
+        df["id"],
+        df["rating"],
+        df["app"],
+        df["iso_date"],
+        df["title"],
+        df["snippet"]
+    )
+
     if duplicate_count > 0:
-        invalid_records = invalid_records.union(duplicates)
+        invalid_records = invalid_records.union(duplicates_records)
 
     print_validation_results(validation_results)
 

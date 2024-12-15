@@ -11,11 +11,13 @@ from pyspark.sql.types import (
     DoubleType,
     LongType,
     ArrayType,
+    IntegerType
 )
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote_plus
 from unidecode import unidecode
+from schema_google import google_play_schema_silver
 
 
 # Função para remover acentos
@@ -55,18 +57,25 @@ def save_reviews(reviews_df: DataFrame, directory: str):
         # Verifica se o diretório existe e cria-o se não existir
         Path(directory).mkdir(parents=True, exist_ok=True)
 
-        # Escrever os dados no formato Delta
-        # reviews_df.write.format("delta").mode("overwrite").save(directory)
-
-        print("SALVANDO DADOS EM PARQUET HEIN!")
-        reviews_df.printSchema()
         reviews_df.show(truncate=False)
         reviews_df.write.option("compression", "snappy").mode("overwrite").parquet(directory)
-        logging.info(f"Dados salvos em {directory} no formato Delta")
+        logging.info(f"[*] Dados salvos em {directory} no formato Delta")
 
     except Exception as e:
-        logging.error(f"Erro ao salvar os dados: {e}")
+        logging.error(f"[*] Erro ao salvar os dados: {e}")
         exit(1)
+
+def get_schema(df, schema):
+    """
+    Obtém o DataFrame a seguir o schema especificado.
+    """
+    for field in schema.fields:
+        if field.dataType == IntegerType():
+            df = df.withColumn(field.name, df[field.name].cast(IntegerType()))
+        elif field.dataType == StringType():
+            df = df.withColumn(field.name, df[field.name].cast(StringType()))
+    return df.select([field.name for field in schema.fields])
+
 
 
 def save_dataframe(df, path, label):
@@ -74,13 +83,26 @@ def save_dataframe(df, path, label):
     Salva o DataFrame em formato parquet e loga a operação.
     """
     try:
+        # Verifica se a coluna "historical_data" existe no DataFrame
+        if "historical_data" not in df.columns:
+            # Adiciona a coluna "historical_data" com um valor padrão
+            df = df.withColumn(
+                "historical_data",
+                lit(None).cast("array<struct<title:string,snippet:string,app:string,rating:string,iso_date:string>>")
+            )
+
+
+        schema = google_play_schema_silver()
+        # Alinhar o DataFrame ao schema definido
+        df = get_schema(df, schema)
+
         if df.limit(1).count() > 0:  # Verificar existência de dados
-            logging.info(f"Salvando dados {label} para: {path}")
+            logging.info(f"[*] Salvando dados {label} para: {path}")
             save_reviews(df, path)
         else:
-            logging.warning(f"Nenhum dado {label} foi encontrado!")
+            logging.warning(f"[*] Nenhum dado {label} foi encontrado!")
     except Exception as e:
-        logging.error(f"Erro ao salvar dados {label}: {e}", exc_info=True)
+        logging.error(f"[*] Erro ao salvar dados {label}: {e}", exc_info=True)
         
 def write_to_mongo(dados_feedback: dict, table_id: str):
 
@@ -114,7 +136,7 @@ def write_to_mongo(dados_feedback: dict, table_id: str):
         elif isinstance(dados_feedback, list):  # Verifica se os dados são uma lista
             collection.insert_many(dados_feedback)
         else:
-            print("Os dados devem ser um dicionário ou uma lista de dicionarios.")
+            print("[*] Os dados devem ser um dicionário ou uma lista de dicionarios.")
     finally:
         # Garante que a conexão será fechada
         client.close()
@@ -129,7 +151,7 @@ def path_exists() -> bool:
     hdfs_path_exists = os.system(f"hadoop fs -test -e {historical_data_path} ") == 0
 
     if not hdfs_path_exists:
-        print(f"O caminho {historical_data_path} não existe no HDFS.")
+        print(f"[*] O caminho {historical_data_path} não existe no HDFS.")
         return False  # Retorna False se o caminho não existir no HDFS
 
     try:
@@ -141,17 +163,17 @@ def path_exists() -> bool:
 
         # Verificar se há partições "odate="
         if "odate=" in result.stdout:
-            print("Partições 'odate=*' encontradas no HDFS.")
+            print("[*] Partições 'odate=*' encontradas no HDFS.")
             return True  # Retorna True se as partições forem encontradas
         else:
-            print("Nenhuma partição com 'odate=*' foi encontrada no HDFS.")
+            print("[*] Nenhuma partição com 'odate=*' foi encontrada no HDFS.")
             return False  # Retorna False se não houver partições
 
     except subprocess.CalledProcessError as e:
-        print(f"Erro ao acessar o HDFS: {e.stderr}")
+        print(f"[*] Erro ao acessar o HDFS: {e.stderr}")
         return False  # Retorna False se ocorrer erro ao acessar o HDFS
     except Exception as e:
-        print(f"Ocorreu um erro inesperado: {str(e)}")
+        print(f"[*] Ocorreu um erro inesperado: {str(e)}")
         return False  # Retorna False para outros erros
 
 
@@ -260,19 +282,11 @@ def processing_old_new(spark: SparkSession, df: DataFrame):
             F.collect_list("historical_data_temp").alias("historical_data"),
         )
 
-        # Exibe o resultado
-        print("processing_old_new completo")
-        df_final.show()
-
         return df_final
 
     else:
-        print(f"Caminho {historical_data_path} não existe no HDFS.")
+        print(f"[*] Caminho {historical_data_path} não existe no HDFS.")
 
         df_final = df.withColumn("historical_data", F.array().cast("array<struct<title:string, snippet:string, app:string, rating:string, iso_date:string>>"))
-
-        # Exibe o resultado
-        print("processing_old_new com array vazio")
-        df_final.show()
 
     return df_final
