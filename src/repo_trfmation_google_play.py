@@ -3,9 +3,9 @@ import json
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import input_file_name, regexp_extract
 from pyspark.sql.types import StructType, StructField, StringType, LongType, DoubleType, MapType
-from metrics import MetricsCollector, validate_ingest
+from src.metrics.metrics import MetricsCollector, validate_ingest
 from datetime import datetime
-from tools import *
+from src.utils.tools import *
 
 
 # Configuração de logging
@@ -85,20 +85,7 @@ def define_schema() -> StructType:
         StructField("title", StringType(), True)
     ])
 
-def read_data(spark: SparkSession, schema: StructType, pathSource: str) -> DataFrame:
-    """
-    Lê os dados de um caminho Parquet e retorna um DataFrame.
-    """
-    try:
-        df = spark.read.schema(schema).parquet(pathSource) \
-            .withColumn("app", regexp_extract(input_file_name(), "/googlePlay/(.*?)/odate=", 1)) \
-            .drop("response")
-        df.printSchema()
-        df.show(truncate=False)
-        return df
-    except Exception as e:
-        logging.error(f"Erro ao ler os dados: {e}", exc_info=True)
-        raise
+
 
 def save_data(valid_df: DataFrame, invalid_df: DataFrame, path_target: str, path_target_fail: str):
     """

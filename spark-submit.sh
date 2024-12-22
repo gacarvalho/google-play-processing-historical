@@ -57,7 +57,7 @@ run_spark_submit() {
     --conf spark.yarn.appMasterEnv.MONGO_PORT=27017 \
     --conf spark.yarn.appMasterEnv.MONGO_DB=compass \
     --name app-processing-google-play-reviews \
-    /app/app-code-compass-processing-hist-google-play.py"
+    /app/repo_trfmation_google_play.py"
 
   # Exibe o comando para depuração
   log "Comando spark-submit que será executado: $spark_cmd"

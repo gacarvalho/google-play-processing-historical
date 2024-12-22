@@ -16,7 +16,7 @@ ENV PYTHONPATH="/app:$PYTHONPATH"
 RUN mkdir /app/
 
 COPY conf/spark-default.conf /usr/local/spark/conf/
-COPY /app-code-compass-processing-hist-google-play/* /app/
+COPY /src/* /app/
 COPY spark-submit.sh /app/spark-submit.sh
 COPY requirements.txt /app/requirements.txt
 
