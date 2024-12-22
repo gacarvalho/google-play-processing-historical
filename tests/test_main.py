@@ -3,8 +3,11 @@ import pytest
 import shutil
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.types import StructType, StructField, StringType, LongType, DoubleType, MapType, ArrayType
+from datetime import datetime
+from unittest.mock import MagicMock, patch
 from src.metrics.metrics import validate_ingest
 from src.utils.tools import read_data, processamento_reviews
+from src.repo_trfmation_google_play import save_data
 
 @pytest.fixture(scope="session")
 def spark():
@@ -134,3 +137,43 @@ def test_validate_ingest(spark):
     print(f"Total de registros inválidos: {invalid_df.count()}")
     print(f"Resultados da validação: {validation_results}")
 
+def test_save_data():
+    # Configurando SparkSession para testes
+    spark = SparkSession.builder.master("local[1]").appName("test").getOrCreate()
+
+    # Criando um DataFrame de teste com dados fictícios
+    test_data = data_google()
+
+    schema = google_play_schema_bronze()
+    # Criar o DataFrame com os dados de teste
+    df_test = spark.createDataFrame(test_data, schema)
+
+    # Salvar o DataFrame como um arquivo Parquet temporário
+    test_parquet_path = "/tmp/test_google_play_data"
+    df_test.write.mode("overwrite").parquet(test_parquet_path)
+
+    # Chamar a função que você está testando
+    result_df = read_data(spark, schema, test_parquet_path)
+
+    # Processamento dos dados
+    df_processado = processamento_reviews(result_df)
+
+
+    # Valida o DataFrame e coleta resultados
+    valid_df, invalid_df, validation_results = validate_ingest(spark, df_processado)
+
+    # Definindo caminhos
+    datePath = datetime.now().strftime("%Y%m%d")
+    path_target = f"/tmp/fake/path/valid/odate={datePath}/"
+    path_target_fail = f"/tmp/fake/path/invalid/odate={datePath}/"
+
+    # Mockando o método parquet
+    with patch("pyspark.sql.DataFrameWriter.parquet", MagicMock()) as mock_parquet:
+        # Chamando a função a ser testada
+        save_data(valid_df, invalid_df, path_target, path_target_fail)
+
+        # Verificando se o método parquet foi chamado com os caminhos corretos
+        mock_parquet.assert_any_call(path_target)
+        mock_parquet.assert_any_call(path_target_fail)
+
+    print("[*] Teste de salvar dados concluído com sucesso!")
