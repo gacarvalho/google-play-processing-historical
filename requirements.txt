@@ -5,4 +5,4 @@ pymongo==4.0
 pytest==7.4.0
 pytest-mock==3.11.1
 pyspark==3.3.0
-unicode==2.8
+Unidecode==0.04.12
