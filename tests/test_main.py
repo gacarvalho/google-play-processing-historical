@@ -9,16 +9,6 @@ from src.metrics.metrics import validate_ingest
 from src.utils.tools import read_data, processamento_reviews
 from src.repo_trfmation_google_play import save_data
 
-@pytest.fixture(scope="session")
-def spark():
-    """
-    Fixture que inicializa o SparkSession para os testes.
-    """
-    spark = SparkSession.builder.master("local").appName("TestApp").getOrCreate()
-    yield spark
-    spark.stop()
-
-
 # Definir o esquema para os dados
 def google_play_schema_bronze():
     return StructType([
