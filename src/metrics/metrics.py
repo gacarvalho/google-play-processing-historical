@@ -1,9 +1,10 @@
 import json
 import re
 from datetime import datetime
-from pyspark.sql.functions import col, count, when
+from pyspark.sql.types import ArrayType, StructType, StringType, StructField
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import col, count, when
+from pyspark.sql import functions as F
 from sparkmeasure import StageMetrics
 
 try:
@@ -230,6 +231,32 @@ def validate_ingest(spark: SparkSession, df: DataFrame) -> tuple:
         invalid_records = invalid_records.union(duplicates_records)
 
     print_validation_results(validation_results)
+
+    # Definir o schema do array "historical_data"
+    historical_data_schema = ArrayType(
+        StructType([
+            StructField("title", StringType(), True),
+            StructField("snippet", StringType(), True),
+            StructField("app", StringType(), True),
+            StructField("rating", StringType(), True),
+            StructField("iso_date", StringType(), True)
+        ])
+    )
+
+    # Criar um array vazio com o schema correto
+    empty_array = F.array().cast(historical_data_schema)
+
+    # Condição para verificar se "historical_data" é nulo ou está vazio
+    cond_histcalEmpty = (F.col("historical_data").isNull() | (F.size(F.col("historical_data")) == 0))
+
+    # DADOS VALIDOS ####################################################################################################################33
+    # Substituir os casos onde "historical_data" contém apenas arrays vazios
+    valid_recordsHistcalEmpty = valid_records.filter(cond_histcalEmpty) \
+                                 .withColumn("historical_data", empty_array)
+
+    valid_recordsHistcalNotEmpty = valid_records.filter(~cond_histcalEmpty)
+    valid_records = valid_recordsHistcalEmpty.union(valid_recordsHistcalNotEmpty)
+
 
     return valid_records, invalid_records, validation_results
 
