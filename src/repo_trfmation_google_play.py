@@ -5,7 +5,12 @@ from pyspark.sql.functions import input_file_name, regexp_extract
 from pyspark.sql.types import StructType, StructField, StringType, LongType, DoubleType, MapType
 from src.metrics.metrics import MetricsCollector, validate_ingest
 from datetime import datetime
-from src.utils.tools import *
+try:
+    # Obtem import para cenarios de execuções em ambiente PRE, PRD
+    from tools import *
+except ModuleNotFoundError:
+    # Obtem import para cenarios de testes unitarios
+    from src.utils.tools import *
 
 
 # Configuração de logging

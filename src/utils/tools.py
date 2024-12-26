@@ -17,7 +17,12 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote_plus
 from unidecode import unidecode
-from src.schemas.schema_google import google_play_schema_silver
+try:
+    # Obtem import para cenarios de execuções em ambiente PRE, PRD
+    from schema_google import google_play_schema_silver
+except ModuleNotFoundError:
+    # Obtem import para cenarios de testes unitarios
+    from src.schemas.schema_google import google_play_schema_silver
 
 
 # Função para remover acentos
