@@ -3,14 +3,16 @@ import json
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import input_file_name, regexp_extract
 from pyspark.sql.types import StructType, StructField, StringType, LongType, DoubleType, MapType
-from src.metrics.metrics import MetricsCollector, validate_ingest
 from datetime import datetime
 try:
     # Obtem import para cenarios de execuções em ambiente PRE, PRD
     from tools import *
+    from metrics import MetricsCollector, validate_ingest
 except ModuleNotFoundError:
     # Obtem import para cenarios de testes unitarios
     from src.utils.tools import *
+    from src.metrics.metrics import MetricsCollector, validate_ingest
+
 
 
 # Configuração de logging
