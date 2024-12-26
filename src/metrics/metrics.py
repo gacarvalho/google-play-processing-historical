@@ -254,7 +254,9 @@ def validate_ingest(spark: SparkSession, df: DataFrame) -> tuple:
     valid_recordsHistcalEmpty = valid_records.filter(cond_histcalEmpty) \
                                  .withColumn("historical_data", empty_array)
 
-    valid_recordsHistcalNotEmpty = valid_records.filter(~cond_histcalEmpty)
+    valid_recordsHistcalNotEmpty = valid_records.filter(~cond_histcalEmpty) \
+                                    .withColumn("historical_data", F.col("historical_data").cast(historical_data_schema))
+
     valid_records = valid_recordsHistcalEmpty.union(valid_recordsHistcalNotEmpty)
 
 
