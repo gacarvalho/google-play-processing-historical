@@ -235,47 +235,56 @@ def processing_old_new(spark: SparkSession, df: DataFrame):
 
         # Criação da coluna historical_data
         result_df = joined_reviews_df.withColumn(
-            "historical_data_temp",
-            when(
-                (col("new.title").isNotNull()) & (col("old.title").isNotNull()) & (col("new.title") != col("old.title")),
-                F.array(F.struct(
-                    col("old.title").alias("title"),
-                    col("old.snippet").alias("snippet"),
-                    col("old.app").alias("app"),
-                    col("old.rating").cast("string").alias("rating"),
-                    col("old.iso_date").alias("iso_date"),
-                ))
-            ).when(
-                (col("new.snippet").isNotNull()) & (col("old.snippet").isNotNull()) & (col("new.snippet") != col("old.snippet")),
-                F.array(F.struct(
-                    col("old.title").alias("title"),
-                    col("old.snippet").alias("snippet"),
-                    col("old.app").alias("app"),
-                    col("old.rating").cast("string").alias("rating"),
-                    col("old.iso_date").alias("iso_date"),
-                ))
-            ).when(
-                (col("new.rating").isNotNull()) & (col("old.rating").isNotNull()) & (col("new.rating") != col("old.rating")),
-                F.array(F.struct(
-                    col("old.title").alias("title"),
-                    col("old.snippet").alias("snippet"),
-                    col("old.app").alias("app"),
-                    col("old.rating").cast("string").alias("rating"),
-                    col("old.iso_date").alias("iso_date"),
-                ))
-            ).when(
-                (col("new.iso_date").isNotNull()) & (col("old.iso_date").isNotNull()) & (col("new.iso_date") != col("old.iso_date")),
-                F.array(F.struct(
-                    col("old.title").alias("title"),
-                    col("old.snippet").alias("snippet"),
-                    col("old.app").alias("app"),
-                    col("old.rating").cast("string").alias("rating"),
-                    col("old.iso_date").alias("iso_date"),
-                ))
-            ).otherwise(
-                F.array().cast("array<struct<title:string, snippet:string, app:string, rating:string, iso_date:string>>")
+                "historical_data_temp",
+                when(
+                    (col("new.title").isNotNull()) & (col("old.title").isNotNull()) & (col("new.title") != col("old.title")),
+                    F.array(
+                        F.struct(
+                            col("old.title").alias("title"),
+                            col("old.snippet").alias("snippet"),
+                            col("old.app").alias("app"),
+                            col("old.rating").cast("string").alias("rating"),
+                            col("old.iso_date").alias("iso_date"),
+                        )
+                    )
+                ).when(
+                    (col("new.snippet").isNotNull()) & (col("old.snippet").isNotNull()) & (col("new.snippet") != col("old.snippet")),
+                    F.array(
+                        F.struct(
+                            col("old.title").alias("title"),
+                            col("old.snippet").alias("snippet"),
+                            col("old.app").alias("app"),
+                            col("old.rating").cast("string").alias("rating"),
+                            col("old.iso_date").alias("iso_date"),
+                        )
+                    )
+                ).when(
+                    (col("new.rating").isNotNull()) & (col("old.rating").isNotNull()) & (col("new.rating") != col("old.rating")),
+                    F.array(
+                        F.struct(
+                            col("old.title").alias("title"),
+                            col("old.snippet").alias("snippet"),
+                            col("old.app").alias("app"),
+                            col("old.rating").cast("string").alias("rating"),
+                            col("old.iso_date").alias("iso_date"),
+                        )
+                    )
+                ).when(
+                    (col("new.iso_date").isNotNull()) & (col("old.iso_date").isNotNull()) & (col("new.iso_date") != col("old.iso_date")),
+                    F.array(
+                        F.struct(
+                            col("old.title").alias("title"),
+                            col("old.snippet").alias("snippet"),
+                            col("old.app").alias("app"),
+                            col("old.rating").cast("string").alias("rating"),
+                            col("old.iso_date").alias("iso_date"),
+                        )
+                    )
+                ).otherwise(
+                    F.array().cast("array<struct<title:string, snippet:string, app:string, rating:string, iso_date:string>>")
+                )
             )
-        )
+
 
         # Agrupando e coletando históricos
         df_final = result_df.groupBy("id").agg(
