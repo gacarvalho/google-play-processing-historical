@@ -252,57 +252,57 @@ def validate_ingest(spark: SparkSession, df: DataFrame) -> tuple:
     # DADOS VALIDOS ####################################################################################################################33
     # Substituir os casos onde "historical_data" contém apenas arrays vazios
     valid_recordsHistcalEmpty = valid_records.filter(cond_histcalEmpty) \
-                                 .withColumn("historical_data", empty_array)
+                                             .select(
+                                                 "id",
+                                                 "app",
+                                                 "rating",
+                                                 "iso_date",
+                                                 "title",
+                                                 "snippet",
+                                                 "historical_data"
+                                             ).withColumn("historical_data", empty_array)
 
+
+    # Filtrando os registros válidos (já assumido que 'cond_histcalEmpty' foi definido corretamente)
     valid_recordsHistcalNotEmpty = valid_records.filter(~cond_histcalEmpty)
 
-    # Verificar se historical_data é um ARRAY, e depois explodir
+    # Debug: Verificando o schema
+    print("debug [0]")
+    valid_recordsHistcalNotEmpty.printSchema()
+
+    # Explodir o campo 'historical_data' se for um ARRAY
     valid_recordsHistcalNotEmpty = valid_recordsHistcalNotEmpty.withColumn(
         "historical_data", explode(col("historical_data"))
     )
 
-    # Agora que historical_data foi explodido, ajustamos o tipo do campo para StructType
-    # valid_recordsHistcalNotEmpty = valid_recordsHistcalNotEmpty.withColumn(
-    #     "historical_data", col("historical_data").cast(
-    #         StructType([
-    #             StructField("title", StringType(), True),
-    #             StructField("snippet", StringType(), True),
-    #             StructField("app", StringType(), True),
-    #             StructField("rating", StringType(), True),
-    #             StructField("iso_date", StringType(), True)
-    #         ])
-    #     )
-    # )
-
-    # Reagrupar em Array usando collect_list
+    # Reagrupar os dados com 'collect_list'
     valid_recordsHistcalNotEmpty = valid_recordsHistcalNotEmpty.groupBy(
-        "avatar", "id", "iso_date", "app", "rating", "likes", "title", "snippet"
-    ).agg(
-        collect_list("historical_data").alias("historical_data")
-    )
-    # Reagrupar em Array usando collect_list
-    valid_recordsHistcalNotEmpty = valid_recordsHistcalNotEmpty.groupBy(
-        "avatar", "id", "iso_date", "app", "rating", "likes", "title", "snippet"
+        "id", "app", "rating", "iso_date", "title", "snippet"
     ).agg(
         collect_list("historical_data").alias("historical_data")
     )
 
+    # Debug: Verificando o schema após reagrupar
     print("debug [1]")
     valid_recordsHistcalEmpty.printSchema()
 
-    print("debug [1]")
-    valid_recordsHistcalNotEmpty.withColumn("historical_data", flatten(col("historical_data"))).printSchema()
+    # Debug: Verificando o schema após o flatten
+    print("debug [2]")
+    valid_recordsHistcalNotEmpty.printSchema()
 
-    valid_records = (valid_recordsHistcalEmpty.union(valid_recordsHistcalNotEmpty.withColumn("historical_data", flatten(col("historical_data"))))
-                                              .select("id",
-                                                      "app",
-                                                      "rating",
-                                                      "iso_date",
-                                                      "title",
-                                                      "snippet",
-                                                      "historical_data"
-                                                )
-                     )
+    # Unir os registros válidos que estavam vazios com os não vazios (HistcalEmpty e HistcalNotEmpty)
+    valid_records = (valid_recordsHistcalEmpty.union(valid_recordsHistcalNotEmpty)
+                                              .select(
+                                                  "id",
+                                                  "app",
+                                                  "rating",
+                                                  "iso_date",
+                                                  "title",
+                                                  "snippet",
+                                                  "historical_data"
+                                              )
+    )
+
 
 
     return valid_records, invalid_records, validation_results
