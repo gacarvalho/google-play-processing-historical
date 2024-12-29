@@ -3,7 +3,7 @@ import re
 from datetime import datetime
 from pyspark.sql.types import ArrayType, StructType, StringType, StructField
 from pyspark.sql import SparkSession, DataFrame
-from pyspark.sql.functions import col, count, when, explode, array, collect_list
+from pyspark.sql.functions import col, count, when, explode, array, collect_list, flatten
 from pyspark.sql import functions as F
 from sparkmeasure import StageMetrics
 
@@ -256,38 +256,44 @@ def validate_ingest(spark: SparkSession, df: DataFrame) -> tuple:
 
     valid_recordsHistcalNotEmpty = valid_records.filter(~cond_histcalEmpty)
 
-
-    # Explodir o campo historical_data se for um Array<Array<Struct>>
+    # Verificar se historical_data é um ARRAY, e depois explodir
     valid_recordsHistcalNotEmpty = valid_recordsHistcalNotEmpty.withColumn(
         "historical_data", explode(col("historical_data"))
     )
 
-    # Ajustar o esquema para StructType
+    # Agora que historical_data foi explodido, ajustamos o tipo do campo para StructType
     valid_recordsHistcalNotEmpty = valid_recordsHistcalNotEmpty.withColumn(
-        "historical_data", col("historical_data").cast(StructType([
-            StructField("title", StringType(), True),
-            StructField("snippet", StringType(), True),
-            StructField("app", StringType(), True),
-            StructField("rating", StringType(), True),
-            StructField("iso_date", StringType(), True)
-        ]))
+        "historical_data", col("historical_data").cast(
+            StructType([
+                StructField("title", StringType(), True),
+                StructField("snippet", StringType(), True),
+                StructField("app", StringType(), True),
+                StructField("rating", StringType(), True),
+                StructField("iso_date", StringType(), True)
+            ])
+        )
     )
 
     # Reagrupar em Array usando collect_list
     valid_recordsHistcalNotEmpty = valid_recordsHistcalNotEmpty.groupBy(
-        "avatar","id", "iso_date", "app",  "rating", "likes","title", "snippet"
+        "avatar", "id", "iso_date", "app", "rating", "likes", "title", "snippet"
     ).agg(
         collect_list("historical_data").alias("historical_data")
     )
-
+    # Reagrupar em Array usando collect_list
+    valid_recordsHistcalNotEmpty = valid_recordsHistcalNotEmpty.groupBy(
+        "avatar", "id", "iso_date", "app", "rating", "likes", "title", "snippet"
+    ).agg(
+        collect_list("historical_data").alias("historical_data")
+    )
 
     print("debug [1]")
     valid_recordsHistcalEmpty.printSchema()
 
     print("debug [1]")
-    valid_recordsHistcalNotEmpty.printSchema()
+    valid_recordsHistcalNotEmpty.withColumn("historical_data", flatten(col("historical_data"))).printSchema()
 
-    valid_records = (valid_recordsHistcalEmpty.union(valid_recordsHistcalNotEmpty)
+    valid_records = (valid_recordsHistcalEmpty.union(valid_recordsHistcalNotEmpty.withColumn("historical_data", flatten(col("historical_data"))))
                                               .select("id",
                                                       "app",
                                                       "rating",
