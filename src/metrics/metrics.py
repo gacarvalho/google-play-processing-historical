@@ -256,6 +256,12 @@ def validate_ingest(spark: SparkSession, df: DataFrame) -> tuple:
 
     valid_recordsHistcalNotEmpty = valid_records.filter(~cond_histcalEmpty)
 
+    print("debug [1]")
+    valid_recordsHistcalEmpty.printSchema()
+
+    print("debug [1]")
+    valid_recordsHistcalNotEmpty.printSchema()
+
     valid_records = valid_recordsHistcalEmpty.union(valid_recordsHistcalNotEmpty)
 
 
