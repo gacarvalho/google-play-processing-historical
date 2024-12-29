@@ -262,17 +262,17 @@ def validate_ingest(spark: SparkSession, df: DataFrame) -> tuple:
     )
 
     # Agora que historical_data foi explodido, ajustamos o tipo do campo para StructType
-    valid_recordsHistcalNotEmpty = valid_recordsHistcalNotEmpty.withColumn(
-        "historical_data", col("historical_data").cast(
-            StructType([
-                StructField("title", StringType(), True),
-                StructField("snippet", StringType(), True),
-                StructField("app", StringType(), True),
-                StructField("rating", StringType(), True),
-                StructField("iso_date", StringType(), True)
-            ])
-        )
-    )
+    # valid_recordsHistcalNotEmpty = valid_recordsHistcalNotEmpty.withColumn(
+    #     "historical_data", col("historical_data").cast(
+    #         StructType([
+    #             StructField("title", StringType(), True),
+    #             StructField("snippet", StringType(), True),
+    #             StructField("app", StringType(), True),
+    #             StructField("rating", StringType(), True),
+    #             StructField("iso_date", StringType(), True)
+    #         ])
+    #     )
+    # )
 
     # Reagrupar em Array usando collect_list
     valid_recordsHistcalNotEmpty = valid_recordsHistcalNotEmpty.groupBy(
