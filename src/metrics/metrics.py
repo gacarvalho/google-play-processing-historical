@@ -153,6 +153,9 @@ def validate_ingest(spark: SparkSession, df: DataFrame) -> tuple:
 
     df = processing_old_new(spark, df)
 
+    print("debug")
+    df.printSchema()
+
     validation_results = {
         "duplicate_check": {"message": "", "status": True, "code": 200},
         "null_check": {"message": "", "status": True, "code": 100},
