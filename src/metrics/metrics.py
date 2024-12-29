@@ -289,6 +289,7 @@ def validate_ingest(spark: SparkSession, df: DataFrame) -> tuple:
     # Debug: Verificando o schema após o flatten
     print("debug [2]")
     valid_recordsHistcalNotEmpty.printSchema()
+    valid_recordsHistcalNotEmpty.show(truncate=False)
 
     # Unir os registros válidos que estavam vazios com os não vazios (HistcalEmpty e HistcalNotEmpty)
     valid_records = (valid_recordsHistcalEmpty.union(valid_recordsHistcalNotEmpty)
