@@ -269,8 +269,6 @@ def validate_ingest(spark: SparkSession, df: DataFrame) -> tuple:
     # Filtrando os registros válidos (já assumido que 'cond_histcalEmpty' foi definido corretamente)
     valid_recordsHistcalNotEmpty = valid_records.filter(~cond_histcalEmpty)
 
-    # Debug: Verificando o schema
-    print("debug [0]")
     valid_recordsHistcalNotEmpty.printSchema()
 
     # Explodir o campo 'historical_data' se for um ARRAY
@@ -284,15 +282,6 @@ def validate_ingest(spark: SparkSession, df: DataFrame) -> tuple:
     ).agg(
         collect_list("historical_data").alias("historical_data")
     )
-
-    # Debug: Verificando o schema após reagrupar
-    print("debug [1]")
-    valid_recordsHistcalEmpty.printSchema()
-
-    # Debug: Verificando o schema após o flatten
-    print("debug [2]")
-    valid_recordsHistcalNotEmpty.printSchema()
-    valid_recordsHistcalNotEmpty.show(truncate=False)
 
     # Unir os registros válidos que estavam vazios com os não vazios (HistcalEmpty e HistcalNotEmpty)
     valid_records = (valid_recordsHistcalEmpty.union(valid_recordsHistcalNotEmpty)
