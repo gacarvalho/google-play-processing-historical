@@ -19,44 +19,46 @@ except ModuleNotFoundError:
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def main():
+
+
+    # Criação da sessão Spark
+    spark = spark_session()
+
     try:
-        
-        # Criação da sessão Spark
-        with spark_session() as spark:
-            
-            # Coleta de métricas
-            metrics_collector = MetricsCollector(spark)
-            metrics_collector.start_collection()
 
-            # Definindo caminhos
-            datePath = datetime.now().strftime("%Y%m%d")
-            pathSource = "/santander/bronze/compass/reviews/googlePlay/*/*"
-            path_target = f"/santander/silver/compass/reviews/googlePlay/odate={datePath}/"
-            path_target_fail = f"/santander/silver/compass/reviews_fail/googlePlay/odate={datePath}/"
+        # Coleta de métricas
+        metrics_collector = MetricsCollector(spark)
+        metrics_collector.start_collection()
 
-            # Definindo o schema para o DataFrame
-            schema = define_schema()
+        # Definindo caminhos
+        datePath = datetime.now().strftime("%Y%m%d")
+        pathSource = "/santander/bronze/compass/reviews/googlePlay/*/*"
+        path_target = f"/santander/silver/compass/reviews/googlePlay/odate={datePath}/"
+        path_target_fail = f"/santander/silver/compass/reviews_fail/googlePlay/odate={datePath}/"
 
-            # Leitura do arquivo Parquet
-            df_read = read_data(spark, schema, pathSource)
+        # Definindo o schema para o DataFrame
+        schema = define_schema()
 
-            # Processamento dos dados
-            df_processado = processamento_reviews(df_read)
+        # Leitura do arquivo Parquet
+        df_read = read_data(spark, schema, pathSource)
+
+        # Processamento dos dados
+        df_processado = processamento_reviews(df_read)
 
 
-            # Validação e separação dos dados
-            valid_df, invalid_df, validation_results = validate_ingest(spark, df_processado)
+        # Validação e separação dos dados
+        valid_df, invalid_df, validation_results = validate_ingest(spark, df_processado)
 
-            valid_df.printSchema()
-            invalid_df.printSchema()
+        valid_df.printSchema()
+        invalid_df.printSchema()
 
-            # Coleta de métricas após processamento
-            metrics_collector.end_collection()
-            metrics_json = metrics_collector.collect_metrics(valid_df, invalid_df, validation_results, "silver_google_play")
+        # Coleta de métricas após processamento
+        metrics_collector.end_collection()
+        metrics_json = metrics_collector.collect_metrics(valid_df, invalid_df, validation_results, "silver_google_play")
 
-            # Salvando dados e métricas
-            save_data(valid_df, invalid_df, path_target, path_target_fail)
-            save_metrics(metrics_json)
+        # Salvando dados e métricas
+        save_data(valid_df, invalid_df, path_target, path_target_fail)
+        save_metrics(metrics_json)
 
     except Exception as e:
         logging.error(f"[*] An error occurred: {e}", exc_info=True)
