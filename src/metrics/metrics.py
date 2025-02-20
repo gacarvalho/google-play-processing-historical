@@ -1,18 +1,21 @@
 import json
 import re
+import logging
 from datetime import datetime
 from pyspark.sql.types import ArrayType, StructType, StringType, StructField
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.functions import col, count, when, explode, array, collect_list, flatten
 from pyspark.sql import functions as F
 from sparkmeasure import StageMetrics
-
 try:
     # Obtem import para cenarios de execuções em ambiente PRE, PRD
     from tools import *
 except ModuleNotFoundError:
     # Obtem import para cenarios de testes unitarios
     from src.utils.tools import *
+
+# Configuração de logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class MetricsCollector:
     """
@@ -53,6 +56,26 @@ class MetricsCollector:
     def collect_metrics(self, valid_df: DataFrame, invalid_df: DataFrame, validation_results: dict, id_app) -> str:
         """
         Coleta métricas de processamento, validação e recursos utilizados.
+
+        Args:
+            valid_df (DataFrame): DataFrame contendo os registros válidos.
+            invalid_df (DataFrame): DataFrame contendo os registros inválidos.
+            validation_results (dict): Dicionário com os resultados da validação.
+
+        Returns:
+            str: Um JSON com as métricas coletadas, incluindo:
+                - Informações gerais da aplicação (ID, sigla do projeto).
+                - Contagem de registros válidos e inválidos.
+                - Tempo total de processamento.
+                - Uso de memória.
+                - Número de nós de dados.
+                - Métricas de estágio do Spark.
+                - Resultados da validação.
+                - Contadores de sucesso e erro da validação.
+
+        Esta função coleta diversas métricas relacionadas ao processo de ingestão e validação de dados.
+        As métricas são calculadas com base nos DataFrames de dados válidos e inválidos, nos resultados da validação
+        e nas métricas de execução do Spark. O resultado final é um JSON que pode ser utilizado para monitoramento e análise.
         """
         if self.start_time is None or self.end_time is None:
             raise ValueError("[*] O tempo de início ou término não foi definido corretamente. Verifique a execução dos métodos start_collection e end_collection.")
@@ -60,9 +83,9 @@ class MetricsCollector:
         total_time = self.end_time - self.start_time
         start_ts = self.start_time.strftime("%Y-%m-%d %H:%M:%S")
         end_ts = self.end_time.strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = datetime.now().strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
         memory_used = self.spark.sparkContext._jvm.org.apache.spark.util.SizeEstimator.estimate(valid_df._jdf) / (1024 * 1024)
-        data_nodes_count = len(self.spark.sparkContext.getConf().get("spark.executor.instances", "1").split(","))
         count_valid = valid_df.count()
         count_invalid = invalid_df.count()
         total_records = count_valid + count_invalid
@@ -76,15 +99,20 @@ class MetricsCollector:
             "type_consistency_check": validation_results["type_consistency_check"],
         }
 
+        # Contadores de sucesso e erro
         success_count = sum(1 for result in validation_metrics.values() if result["status"])
         error_count = len(validation_metrics) - success_count
+
+        # Convertendo "segmento" para uma lista de strings
+        segmentos_unicos = [row["segmento"] for row in valid_df.select("segmento").distinct().collect()]
+
 
         metrics = {
             "application_id": self.spark.sparkContext.applicationId,
             "sigla": {
                 "sigla": "DT",
                 "projeto": "compass",
-                "cat": "silver_historical"
+                "layer_lake": "silver_historical"
             },
             "valid_data": {
                 "count": count_valid,
@@ -97,19 +125,21 @@ class MetricsCollector:
             "total_records": total_records,
             "total_processing_time": str(total_time),
             "memory_used": memory_used,
-            "data_nodes_count": data_nodes_count,
             "stages": stage_metrics_dict,
             "validation_results": validation_metrics,
             "success_count": success_count,
             "error_count": error_count,
+            "type_client": segmentos_unicos,
             "source": {
                 "app": id_app,
-                "search": "google_play"
+                "search": "apple_store"
             },
             "_ts": {
                 "compass_start_ts": start_ts,
                 "compass_end_ts": end_ts
-            }
+            },
+            "timestamp": timestamp
+
         }
 
         return json.dumps(metrics)
@@ -125,7 +155,7 @@ def print_validation_results(results: dict):
 
 def validate_ingest(spark: SparkSession, df: DataFrame) -> tuple:
     """
-    Valida um DataFrame de dados de ingestão.
+    Valida um DataFrame de dados de ingestão e compara com dados históricos.
 
     Args:
         df (DataFrame): O DataFrame a ser validado.
@@ -141,34 +171,29 @@ def validate_ingest(spark: SparkSession, df: DataFrame) -> tuple:
         - Verifica a existência de valores nulos em colunas críticas.
         - Verifica a consistência dos tipos de dados.
 
-    Códigos de retorno:
-        200: Sucesso
-        100: Nenhum valor nulo encontrado
-        101: Valores nulos encontrados
-        200: Nenhum registro duplicado encontrado
-        201: Registros duplicados encontrados
-        300: Consistência dos tipos de dados verificada com sucesso
-        301: Valores não numéricos encontrados
+    Codigos de retorno:
+        200: Sucesso (Nenhum problema encontrado)
+        400: Erro nos dados (Valores nulos ou tipos inválidos)
+        409: Conflito de dados (Registros duplicados encontrados)
     """
-
+    logging.info(f"[*] def validate_ingest: Iniciando o processamento da funcao processing_old_new", exc_info=True)
     df = processing_old_new(spark, df)
 
-    print("debug")
-    df.printSchema()
-
+    # Validações (duplicidade, valores nulos, consistência de tipos)
     validation_results = {
         "duplicate_check": {"message": "", "status": True, "code": 200},
-        "null_check": {"message": "", "status": True, "code": 100},
-        "type_consistency_check": {"message": "", "status": True, "code": 300},
+        "null_check": {"message": "", "status": True, "code": 200},
+        "type_consistency_check": {"message": "", "status": True, "code": 200},
         "total_records": df.count(),
     }
 
+    logging.info(f"[*] def validate_ingest: Iniciando o processo de data quality", exc_info=True)
     # Verificação de duplicidade
     duplicates = df.groupBy("id").count().filter(col("count") > 1)
     duplicate_count = duplicates.count()
     if duplicate_count > 0:
         validation_results["duplicate_check"]["status"] = False
-        validation_results["duplicate_check"]["code"] = 201
+        validation_results["duplicate_check"]["code"] = 409
         validation_results["duplicate_check"]["message"] = f"Registros duplicados encontrados: {duplicate_count} registros com base no 'id'."
     else:
         validation_results["duplicate_check"]["status"] = True
@@ -183,30 +208,30 @@ def validate_ingest(spark: SparkSession, df: DataFrame) -> tuple:
     null_issues = {col: count for col, count in null_counts.items() if count > 0}
     if null_issues:
         validation_results["null_check"]["status"] = False
-        validation_results["null_check"]["code"] = 101
+        validation_results["null_check"]["code"] = 400
         validation_results["null_check"]["message"] = f"Valores nulos encontrados nas colunas: {null_issues}."
     else:
         validation_results["null_check"]["status"] = True
-        validation_results["null_check"]["code"] = 100
+        validation_results["null_check"]["code"] = 200
         validation_results["null_check"]["message"] = "Nenhum valor nulo encontrado nas colunas criticas."
 
     # Consistência dos tipos de dados
     invalid_rating = df.filter(~df.rating.cast("int").isNotNull())
     if invalid_rating.count() > 0:
         validation_results["type_consistency_check"]["status"] = False
-        validation_results["type_consistency_check"]["code"] = 301
+        validation_results["type_consistency_check"]["code"] = 400
         validation_results["type_consistency_check"]["message"] = "Valores não numericos encontrados na coluna 'rating'."
     else:
         validation_results["type_consistency_check"]["status"] = True
-        validation_results["type_consistency_check"]["code"] = 300
+        validation_results["type_consistency_check"]["code"] = 200
         validation_results["type_consistency_check"]["message"] = "Consistencia dos tipos de dados verificada com sucesso."
 
     # Modificação: Remover o uso de subtract e filtrar registros válidos
-    valid_records = df.dropna(subset=["id", "rating", "app", "iso_date", "title", "snippet"])
+    valid_records = df.dropna(subset=["id", "rating", "app", "iso_date", "title", "segmento","snippet"])
     
 
     # Filtrar apenas as colunas relevantes
-    columns_to_check = ["id", "rating", "app", "iso_date", "title", "snippet"]
+    columns_to_check = ["id", "rating", "app", "iso_date", "title", "segmento", "snippet"]
     invalid_records = df.select(*columns_to_check).filter(
         (col("id").isNull()) |
         (col("rating").isNull()) |
@@ -225,6 +250,7 @@ def validate_ingest(spark: SparkSession, df: DataFrame) -> tuple:
         df["id"],
         df["rating"],
         df["app"],
+        df["segmento"],
         df["iso_date"],
         df["title"],
         df["snippet"]
@@ -241,6 +267,7 @@ def validate_ingest(spark: SparkSession, df: DataFrame) -> tuple:
             StructField("title", StringType(), True),
             StructField("snippet", StringType(), True),
             StructField("app", StringType(), True),
+            StructField("segmento", StringType(), True),
             StructField("rating", StringType(), True),
             StructField("iso_date", StringType(), True)
         ])
@@ -258,6 +285,7 @@ def validate_ingest(spark: SparkSession, df: DataFrame) -> tuple:
                                              .select(
                                                  "id",
                                                  "app",
+                                                 "segmento",
                                                  "rating",
                                                  "iso_date",
                                                  "title",
@@ -269,8 +297,6 @@ def validate_ingest(spark: SparkSession, df: DataFrame) -> tuple:
     # Filtrando os registros válidos (já assumido que 'cond_histcalEmpty' foi definido corretamente)
     valid_recordsHistcalNotEmpty = valid_records.filter(~cond_histcalEmpty)
 
-    valid_recordsHistcalNotEmpty.printSchema()
-
     # Explodir o campo 'historical_data' se for um ARRAY
     valid_recordsHistcalNotEmpty = valid_recordsHistcalNotEmpty.withColumn(
         "historical_data", explode(col("historical_data"))
@@ -278,7 +304,7 @@ def validate_ingest(spark: SparkSession, df: DataFrame) -> tuple:
 
     # Reagrupar os dados com 'collect_list'
     valid_recordsHistcalNotEmpty = valid_recordsHistcalNotEmpty.groupBy(
-        "id", "app", "rating", "iso_date", "title", "snippet"
+        "id", "app", "segmento","rating", "iso_date", "title", "snippet"
     ).agg(
         collect_list("historical_data").alias("historical_data")
     )
@@ -288,6 +314,7 @@ def validate_ingest(spark: SparkSession, df: DataFrame) -> tuple:
                                               .select(
                                                   "id",
                                                   "app",
+                                                  "segmento",
                                                   "rating",
                                                   "iso_date",
                                                   "title",

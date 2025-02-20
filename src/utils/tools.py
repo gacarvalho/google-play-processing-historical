@@ -5,6 +5,7 @@ import logging
 import pymongo
 from pyspark.sql import SparkSession, DataFrame, functions as F
 from pyspark.sql.functions import col, lit, to_date, when, input_file_name, regexp_extract
+from pyspark.sql.utils import AnalysisException
 from pyspark.sql.types import (
     StructType,
     StructField,
@@ -18,6 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote_plus
 from unidecode import unidecode
+from elasticsearch import Elasticsearch
 try:
     # Obtem import para cenarios de execuções em ambiente PRE, PRD
     from schema_google import google_play_schema_silver
@@ -33,6 +35,20 @@ def remove_accents(s):
 remove_accents_udf = F.udf(remove_accents, StringType())
 
 
+def read_source_parquet(spark, schema, path):
+    """Tenta ler um Parquet e retorna None se não houver dados"""
+    try:
+        df = spark.read.schema(schema).parquet(path)
+        if df.isEmpty():
+            print(f"[*] Nenhum dado encontrado em: {path}")
+            return None
+        return df.withColumn("app", regexp_extract(input_file_name(), "/googlePlay/(.*?)/odate=", 1)) \
+                 .drop("response") \
+                 .withColumn("segmento", regexp_extract(input_file_name(), r"/googlePlay/[^/_]+_([pfj]+)/odate=", 1))
+    except AnalysisException:
+        print(f"[*] Falha ao ler: {path}. O arquivo pode não existir.")
+        return None
+
 def processamento_reviews(df: DataFrame):
 
     logging.info(f"{datetime.now().strftime('%Y%m%d %H:%M:%S.%f')} [*] Processando o tratamento da camada historica")
@@ -43,6 +59,7 @@ def processamento_reviews(df: DataFrame):
         "id",
         "iso_date",
         "app",
+        "segmento",
         "rating",
         "likes",
         F.upper(remove_accents_udf(F.col("title"))).alias("title"),
@@ -51,25 +68,6 @@ def processamento_reviews(df: DataFrame):
 
     return df_select
 
-def save_reviews(reviews_df: DataFrame, directory: str):
-    """
-    Salva os dados do DataFrame no formato Delta no diretório especificado.
-
-    Args:
-        reviews_df (DataFrame): DataFrame PySpark contendo as avaliações.
-        directory (str): Caminho do diretório onde os dados serão salvos.
-    """
-    try:
-        # Verifica se o diretório existe e cria-o se não existir
-        Path(directory).mkdir(parents=True, exist_ok=True)
-
-        reviews_df.show(truncate=False)
-        reviews_df.write.option("compression", "snappy").mode("overwrite").parquet(directory)
-        logging.info(f"[*] Dados salvos em {directory} no formato Delta")
-
-    except Exception as e:
-        logging.error(f"[*] Erro ao salvar os dados: {e}")
-        exit(1)
 
 def get_schema(df, schema):
     """
@@ -104,48 +102,37 @@ def save_dataframe(df, path, label):
 
         if df.limit(1).count() > 0:  # Verificar existência de dados
             logging.info(f"[*] Salvando dados {label} para: {path}")
-            save_reviews(df, path)
+            # Verifica se o diretório existe e cria-o se não existir
+            Path(path).mkdir(parents=True, exist_ok=True)
+
+            df.write.option("compression", "snappy").mode("overwrite").parquet(path)
+            logging.info(f"[*] Dados salvos em {path} no formato Parquet")
         else:
             logging.warning(f"[*] Nenhum dado {label} foi encontrado!")
     except Exception as e:
         logging.error(f"[*] Erro ao salvar dados {label}: {e}", exc_info=True)
-        
-def write_to_mongo(dados_feedback: dict, table_id: str):
 
-    mongo_user = os.environ["MONGO_USER"]
-    mongo_pass = os.environ["MONGO_PASS"]
-    mongo_host = os.environ["MONGO_HOST"]
-    mongo_port = os.environ["MONGO_PORT"]
-    mongo_db = os.environ["MONGO_DB"]
+        # Convertendo "segmento" para uma lista de strings
+        segmentos_unicos = [row["segmento"] for row in df.select("segmento").distinct().collect()]
 
-    # ---------------------------------------------- Escapar nome de usuário e senha ----------------------------------------------
-    # A função quote_plus transforma caracteres especiais em seu equivalente escapado, de modo que o
-    # URI seja aceito pelo MongoDB. Por exemplo, m@ngo será convertido para m%40ngo.
-    escaped_user = quote_plus(mongo_user)
-    escaped_pass = quote_plus(mongo_pass)
+        # JSON de erro
+        error_metrics = {
+            "timestamp": datetime.now().isoformat(),
+            "layer": "silver",
+            "project": "compass",
+            "job": "google_play_reviews",
+            "priority": "0",
+            "tower": "SBBR_COMPASS",
+            "client": segmentos_unicos,
+            "error": str(e)
+        }
 
-    # ---------------------------------------------- Conexão com MongoDB ----------------------------------------------------------
-    # Quando definimos maxPoolSize=1, estamos dizendo ao MongoDB para manter apenas uma conexão aberta no pool.
-    # Isso implica que cada vez que uma nova operação precisa de uma conexão, a conexão existente será
-    # reutilizada em vez de criar uma nova.
-    mongo_uri = f"mongodb://{escaped_user}:{escaped_pass}@{mongo_host}:{mongo_port}/{mongo_db}?authSource={mongo_db}&maxPoolSize=1"
+        metrics_json = json.dumps(error_metrics)
 
-    client = pymongo.MongoClient(mongo_uri)
+        # Salvar métricas de erro no Elastic
+        save_metrics_job_fail(metrics_json)
 
-    try:
-        db = client[mongo_db]
-        collection = db[table_id]
 
-        # Inserir dados no MongoDB
-        if isinstance(dados_feedback, dict):  # Verifica se os dados são um dicionário
-            collection.insert_one(dados_feedback)
-        elif isinstance(dados_feedback, list):  # Verifica se os dados são uma lista
-            collection.insert_many(dados_feedback)
-        else:
-            print("[*] Os dados devem ser um dicionário ou uma lista de dicionarios.")
-    finally:
-        # Garante que a conexão será fechada
-        client.close()
 
 
 def path_exists() -> bool:
@@ -191,6 +178,7 @@ def processing_old_new(spark: SparkSession, df: DataFrame) -> DataFrame:
         StructField("id", StringType(), True),
         StructField("iso_date", StringType(), True),
         StructField("app", StringType(), False),
+        StructField("segmento", StringType(), False),
         StructField("rating", DoubleType(), True),
         StructField("likes", LongType(), True),
         StructField("title", StringType(), True),
@@ -199,6 +187,7 @@ def processing_old_new(spark: SparkSession, df: DataFrame) -> DataFrame:
             StructField("title", StringType(), True),
             StructField("snippet", StringType(), True),
             StructField("app", StringType(), True),
+            StructField("segmento", StringType(), True),
             StructField("rating", StringType(), True),
             StructField("iso_date", StringType(), True)
         ])), False),
@@ -228,9 +217,6 @@ def processing_old_new(spark: SparkSession, df: DataFrame) -> DataFrame:
         new_reviews_df_alias = df.alias("new")
         historical_reviews_df_alias = df_historical.alias("old")
 
-        # Armazenar dataframe com o historico de avaliacoes para nao sobrescrever casos com odate atual
-        historical_reviews_df_alias.cache()
-
         # Junção dos DataFrames
         joined_reviews_df = new_reviews_df_alias.join(historical_reviews_df_alias, "id", "outer")
 
@@ -244,6 +230,7 @@ def processing_old_new(spark: SparkSession, df: DataFrame) -> DataFrame:
                         col("old.title").alias("title"),
                         col("old.snippet").alias("snippet"),
                         col("old.app").alias("app"),
+                        col("new.segmento").alias("segmento"),
                         col("old.rating").cast("string").alias("rating"),
                         col("old.iso_date").alias("iso_date"),
                     )
@@ -255,6 +242,7 @@ def processing_old_new(spark: SparkSession, df: DataFrame) -> DataFrame:
                         col("old.title").alias("title"),
                         col("old.snippet").alias("snippet"),
                         col("old.app").alias("app"),
+                        col("new.segmento").alias("segmento"),
                         col("old.rating").cast("string").alias("rating"),
                         col("old.iso_date").alias("iso_date"),
                     )
@@ -266,6 +254,7 @@ def processing_old_new(spark: SparkSession, df: DataFrame) -> DataFrame:
                         col("old.title").alias("title"),
                         col("old.snippet").alias("snippet"),
                         col("old.app").alias("app"),
+                        col("new.segmento").alias("segmento"),
                         col("old.rating").cast("string").alias("rating"),
                         col("old.iso_date").alias("iso_date"),
                     )
@@ -277,14 +266,15 @@ def processing_old_new(spark: SparkSession, df: DataFrame) -> DataFrame:
                         col("old.title").alias("title"),
                         col("old.snippet").alias("snippet"),
                         col("old.app").alias("app"),
+                        col("new.segmento").alias("segmento"),
                         col("old.rating").cast("string").alias("rating"),
                         col("old.iso_date").alias("iso_date"),
                     )
                 )
             ).otherwise(
-                F.array().cast("array<struct<title:string, snippet:string, app:string, rating:string, iso_date:string>>")
+                F.array().cast("array<struct<title:string, snippet:string, app:string, segmento:string, rating:string, iso_date:string>>")
             )
-        )
+        ).distinct()
 
 
         # Agrupando e coletando históricos
@@ -294,6 +284,7 @@ def processing_old_new(spark: SparkSession, df: DataFrame) -> DataFrame:
             F.coalesce(F.first("new.iso_date"), F.first("old.iso_date")).alias("iso_date"),
             F.coalesce(F.first("new.title"), F.first("old.title")).alias("title"),
             F.coalesce(F.first("new.snippet"), F.first("old.snippet")).alias("snippet"),
+            F.first("new.segmento").alias("segmento"),
             F.flatten(F.collect_list("historical_data_temp")).alias("historical_data")
         )
 
@@ -302,32 +293,37 @@ def processing_old_new(spark: SparkSession, df: DataFrame) -> DataFrame:
     else:
         print(f"[*] Caminho {historical_data_path} não existe no HDFS.")
 
-        df_final = df.withColumn("historical_data", F.array().cast("array<struct<title:string, snippet:string, app:string, rating:string, iso_date:string>>"))
+        df_final = df.withColumn("historical_data", F.array().cast("array<struct<title:string, snippet:string, app:string, segmento:string, rating:string, iso_date:string>>"))
 
     return df_final
 
-def read_data(spark: SparkSession, schema: StructType, pathSource: str) -> DataFrame:
-    """
-    Lê os dados de um caminho Parquet e retorna um DataFrame.
-    """
-    try:
-        df = spark.read.schema(schema).parquet(pathSource) \
-            .withColumn("app", regexp_extract(input_file_name(), "/googlePlay/(.*?)/odate=", 1)) \
-            .drop("response")
-        df.printSchema()
-        df.show(truncate=False)
-        return df
-    except Exception as e:
-        logging.error(f"Erro ao ler os dados: {e}", exc_info=True)
-        raise
+
 
 def save_metrics_job_fail(metrics_json):
     """
-    Salva as métricas no MongoDB.
+    Salva as métricas de aplicações com falhas
     """
+
+    ES_HOST = "http://elasticsearch:9200"
+    ES_INDEX = "compass_dt_datametrics_fail"
+    ES_USER = os.environ["ES_USER"]
+    ES_PASS = os.environ["ES_PASS"]
+
+    # Conectar ao Elasticsearch
+    es = Elasticsearch(
+        [ES_HOST],
+        basic_auth=(ES_USER, ES_PASS)
+    )
+
     try:
+        # Converter JSON em dicionário
         metrics_data = json.loads(metrics_json)
-        write_to_mongo(metrics_data, "dt_datametrics_fail_compass")
-        logging.info(f"[*] Métricas da aplicação salvas: {metrics_json}")
+
+        # Inserir no Elasticsearch
+        response = es.index(index=ES_INDEX, document=metrics_data)
+
+        logging.info(f"[*] Métricas da aplicação salvas no Elasticsearch: {response}")
     except json.JSONDecodeError as e:
         logging.error(f"[*] Erro ao processar métricas: {e}", exc_info=True)
+    except Exception as e:
+        logging.error(f"[*] Erro ao salvar métricas no Elasticsearch: {e}", exc_info=True)
