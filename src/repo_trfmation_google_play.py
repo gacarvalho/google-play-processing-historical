@@ -89,15 +89,17 @@ def main():
     except Exception as e:
         logging.error(f"[*] An error occurred: {e}", exc_info=True)
 
+
         # JSON de erro
         error_metrics = {
-            "data_e_hora": datetime.now().isoformat(),
-            "camada": "silver",
-            "grupo": "compass",
+            "timestamp": datetime.now().isoformat(),
+            "layer": "silver",
+            "project": "compass",
             "job": "google_play_reviews",
-            "relevancia": "0",
-            "torre": "SBBR_COMPASS",
-            "erro": str(e)
+            "priority": "0",
+            "tower": "SBBR_COMPASS",
+            "client": "NA",
+            "error": str(e)
         }
 
         metrics_json = json.dumps(error_metrics)
