@@ -134,7 +134,7 @@ def save_data(valid_df: DataFrame, invalid_df: DataFrame, path_target: str, path
     except Exception as e:
         logging.error(f"[*] Erro ao salvar os dados: {e}", exc_info=True)
         log_error(e, valid_df)
-        log_error(e, invalid_df..)
+        log_error(e, invalid_df)
         raise
 
 def save_metrics(metrics_json,df):
