@@ -34,6 +34,25 @@ def remove_accents(s):
 
 remove_accents_udf = F.udf(remove_accents, StringType())
 
+def log_error(e, df):
+    """Gera e salva métricas de erro no Elastic."""
+
+    # Convertendo "segmento" para uma lista de strings
+    segmentos_unicos = [row["segmento"] for row in df.select("segmento").distinct().collect()]
+
+    error_metrics = {
+        "timestamp": datetime.now().isoformat(),
+        "layer": "silver",
+        "project": "compass",
+        "job": "google_play_reviews",
+        "priority": "0",
+        "tower": "SBBR_COMPASS",
+        "client": segmentos_unicos,
+        "error": str(e)
+    }
+
+    # Serializa para JSON e salva no MongoDB
+    save_metrics_job_fail(json.dumps(error_metrics))
 
 def read_source_parquet(spark, schema, path):
     """Tenta ler um Parquet e retorna None se não houver dados"""
@@ -60,7 +79,7 @@ def processamento_reviews(df: DataFrame):
         "iso_date",
         "app",
         "segmento",
-        "rating",
+        col("rating").cast("int").cast("string").alias("rating"),
         "likes",
         F.upper(remove_accents_udf(F.col("title"))).alias("title"),
         F.upper(remove_accents_udf(F.col("snippet"))).alias("snippet")
@@ -111,28 +130,7 @@ def save_dataframe(df, path, label):
             logging.warning(f"[*] Nenhum dado {label} foi encontrado!")
     except Exception as e:
         logging.error(f"[*] Erro ao salvar dados {label}: {e}", exc_info=True)
-
-        # Convertendo "segmento" para uma lista de strings
-        segmentos_unicos = [row["segmento"] for row in df.select("segmento").distinct().collect()]
-
-        # JSON de erro
-        error_metrics = {
-            "timestamp": datetime.now().isoformat(),
-            "layer": "silver",
-            "project": "compass",
-            "job": "google_play_reviews",
-            "priority": "0",
-            "tower": "SBBR_COMPASS",
-            "client": segmentos_unicos,
-            "error": str(e)
-        }
-
-        metrics_json = json.dumps(error_metrics)
-
-        # Salvar métricas de erro no Elastic
-        save_metrics_job_fail(metrics_json)
-
-
+        log_error(e, df)
 
 
 def path_exists() -> bool:
@@ -179,7 +177,7 @@ def processing_old_new(spark: SparkSession, df: DataFrame) -> DataFrame:
         StructField("iso_date", StringType(), True),
         StructField("app", StringType(), False),
         StructField("segmento", StringType(), False),
-        StructField("rating", DoubleType(), True),
+        StructField("rating", StringType(), True),
         StructField("likes", LongType(), True),
         StructField("title", StringType(), True),
         StructField("snippet", StringType(), True),

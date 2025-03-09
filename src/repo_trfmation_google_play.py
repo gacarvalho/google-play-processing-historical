@@ -84,28 +84,11 @@ def main():
 
         # Salvando dados e métricas
         save_data(valid_df, invalid_df, path_target, path_target_fail)
-        save_metrics(metrics_json)
+        save_metrics(metrics_json,valid_df)
 
     except Exception as e:
         logging.error(f"[*] An error occurred: {e}", exc_info=True)
-
-
-        # JSON de erro
-        error_metrics = {
-            "timestamp": datetime.now().isoformat(),
-            "layer": "silver",
-            "project": "compass",
-            "job": "google_play_reviews",
-            "priority": "0",
-            "tower": "SBBR_COMPASS",
-            "client": "NA",
-            "error": str(e)
-        }
-
-        metrics_json = json.dumps(error_metrics)
-
-        # Salvar métricas de erro no Elastic
-        save_metrics_job_fail(metrics_json)
+        log_error(e, df)
 
 
 def spark_session():
@@ -150,9 +133,11 @@ def save_data(valid_df: DataFrame, invalid_df: DataFrame, path_target: str, path
         save_dataframe(invalid_df, path_target_fail, "invalido")
     except Exception as e:
         logging.error(f"[*] Erro ao salvar os dados: {e}", exc_info=True)
+        log_error(e, valid_df)
+        log_error(e, invalid_df..)
         raise
 
-def save_metrics(metrics_json):
+def save_metrics(metrics_json,df):
     """
     Salva as métricas.
     """
@@ -178,23 +163,7 @@ def save_metrics(metrics_json):
         logging.info(f"[*] Métricas da aplicação salvas no Elasticsearch: {response}")
     except json.JSONDecodeError as e:
         logging.error(f"[*] Erro ao processar métricas: {e}", exc_info=True)
-
-        # JSON de erro
-        error_metrics = {
-            "timestamp": datetime.now().isoformat(),
-            "layer": "silver",
-            "project": "compass",
-            "job": "google_play_reviews",
-            "priority": "3",
-            "tower": "SBBR_COMPASS",
-            "client": "[NA]",
-            "error": str(e)
-        }
-
-        metrics_json = json.dumps(error_metrics)
-
-        # Salvar métricas de erro no Elastic
-        save_metrics_job_fail(metrics_json)
+        log_error(e, df)
 
     except Exception as e:
         logging.error(f"[*] Erro ao salvar métricas no Elasticsearch: {e}", exc_info=True)

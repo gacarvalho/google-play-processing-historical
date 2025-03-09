@@ -17,7 +17,7 @@ def google_play_schema_bronze():
         StructField("id", StringType(), True),
         StructField("iso_date", StringType(), True),
         StructField("likes", LongType(), True),
-        StructField("rating", DoubleType(), True),
+        StructField("rating", StringType(), True),
         StructField("response", MapType(StringType(), StringType(), True), True),
         StructField("snippet", StringType(), True),
         StructField("title", StringType(), True)

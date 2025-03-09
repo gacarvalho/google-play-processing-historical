@@ -5,7 +5,7 @@ def google_play_schema_silver():
         StructField('id', StringType(), True),
         StructField('app', StringType(), False),
         StructField('segmento', StringType(), False),
-        StructField('rating', DoubleType(), True),
+        StructField('rating', StringType(), True),
         StructField('iso_date', StringType(), True),
         StructField('title', StringType(), True),
         StructField('snippet', StringType(), True),
