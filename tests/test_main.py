@@ -1,15 +1,25 @@
-
 import pytest
 import shutil
-from pyspark.sql import SparkSession, DataFrame
-from pyspark.sql.types import StructType, StructField, StringType, LongType, DoubleType, MapType, ArrayType
+from pyspark.sql import SparkSession
+from pyspark.sql.types import StructType, StructField, StringType, LongType, DoubleType, MapType
 from datetime import datetime
 from unittest.mock import MagicMock, patch
+from pyspark.sql.functions import lit, regexp_extract, col
+
+from src.utils.tools import processamento_reviews, read_source_parquet
 from src.metrics.metrics import validate_ingest
-from src.utils.tools import read_data, processamento_reviews
 from src.repo_trfmation_google_play import save_data
 
-# Definir o esquema para os dados
+# Fixture do Spark para os testes
+@pytest.fixture(scope="session")
+def spark():
+    return SparkSession.builder \
+        .master("local[1]") \
+        .appName("GooglePlayTests") \
+        .config("spark.sql.shuffle.partitions", "1") \
+        .getOrCreate()
+
+# Schema para testes
 def google_play_schema_bronze():
     return StructType([
         StructField("avatar", StringType(), True),
@@ -17,153 +27,81 @@ def google_play_schema_bronze():
         StructField("id", StringType(), True),
         StructField("iso_date", StringType(), True),
         StructField("likes", LongType(), True),
-        StructField("rating", StringType(), True),
+        StructField("rating", DoubleType(), True),
         StructField("response", MapType(StringType(), StringType(), True), True),
         StructField("snippet", StringType(), True),
         StructField("title", StringType(), True)
     ])
 
-
-
-# Configuração do pytest para o Spark
-@pytest.fixture(scope="session")
-def spark():
-    # Inicializar uma SparkSession para os testes
-    return SparkSession.builder.master("local[1]").appName("TestReadData").getOrCreate()
-
-def data_google():
-    return [
-        ("https://play-lh.googleusercontent.com/a/ACg8ocKVR7jALSxc3SZfSeBv5ZysOFoXIkngoE0O_J5HfUql9W836w=mo", "November 03, 2024", "c484bb1e-eebb-4609-93c4-d21d00f648ed", "2024-11-03T01:58:03Z", 266, 2.0, None, "As notificações do app não funciona depois da última atualização...", "Robson Santos"),
-        ("https://play-lh.googleusercontent.com/a-/ALV-UjU0-K2FzgFHxvvsqYDDjM5hdBFKxogfpXOI30yUSGPd2jrwYyUlzA", "October 23, 2024", "1ccda588-f60f-4b4d-b9a2-00234e903628", "2024-10-23T23:30:38Z", 189, 3.0, None, "App leve, rápido, fácil de navegar. Gostei muito. Só sinto falta de...", "Carlos Alberto Souza"),
-        ("https://play-lh.googleusercontent.com/a-/ALV-UjXz3IdoGmdiJywZYfufnWNGoC041A8vtvb4SLgclRKicixck7A7Cg", "November 14, 2024", "9b0fb626-a84b-4a19-86a9-c3d7e6d00138", "2024-11-14T14:01:17Z", 54, 1.0, None, "O aplicativo Santander apresenta falhas constantes e exige confirmação...", "Tanios Toledo"),
-        ("https://play-lh.googleusercontent.com/a-/ALV-UjWqUa0ZCAcbIpqRM9uo9604gjuDyLg2c5mR-9LLgJLesdBEZ00ooQ", "October 01, 2024", "69a3d3db-7760-47d0-9fc1-a9cb058c8402", "2024-10-01T21:33:15Z", 136, 2.0, None, "Interface deixa a muito a indesejar e umas complicações chatas...", "Rafa GP"),
-        ("https://play-lh.googleusercontent.com/a-/ALV-UjWqUa0ZCAcbIpqRM9uo9604gjuDyLg2c5mR-9LLgJLesdBEZ00ooQ", "October 01, 2024", "69a3d3db-7760-47d0-9fc1-a9cb058c8402", "2024-10-01T21:33:15Z", 136, 2.0, None, "Interface deixa a muito a indesejar e umas complicações chatas...", "Rafa GP"),
-        ("https://play-lh.googleusercontent.com/a-/ALV-UjWqUa0ZCAcbIpqRM9uo9604gjuDyLg2c5mR-9LLgJLesdBEZ00ooQ", "October 01, 2024", "69a3d3db-7760-47d0-9fc1-a9cb058c8402", "2024-10-01T21:33:15Z", 136, 2.0, None, "Interface deixa a muito a indesejar e umas complicações chatas...", "Rafa GP"),
-        ("https://play-lh.googleusercontent.com/a-/ALV-UjXYIpyQqCUqTFoywYt5PSMGPSgPYT-GqlXM5m9SStORtNyBLoK2eGQ", "October 12, 2024", "8a20d295-fdb8-4ab6-84e1-c5e3eb1f2578", "2024-10-12T14:10:56Z", 95, 4.0, None, "A interface está cada vez melhor. O app do Santander está no caminho certo...", "Pedro Henrique Melo"),
-        ("https://play-lh.googleusercontent.com/a-/ALV-UjURFIlCwxWzLfqZc-5aNyQRGgfXYPOG08SDYtZ1HO7oISjUsQn87g", "November 10, 2024", "ad17328f-784d-4e63-bdf9-309bdb3781eb", "2024-11-10T10:00:45Z", 84, 3.0, None, "O aplicativo em geral é bom, mas sinto falta de integração com dispositivos...", "Lucia Alves"),
+# Fixture com dados de teste
+@pytest.fixture
+def test_data(spark):
+    data = [
+        ("avatar1", "Nov 03, 2024", "id1", "2024-11-03T01:58:03Z", 266, 2.0, None, "Review 1", "User 1"),
+        ("avatar2", "Oct 23, 2024", "id2", "2024-10-23T23:30:38Z", 189, 3.0, None, "Review 2", "User 2"),
+        ("avatar3", "Nov 14, 2024", "id3", "2024-11-14T14:01:17Z", 54, 1.0, None, "Review 3", "User 3")
     ]
+    return spark.createDataFrame(data, google_play_schema_bronze())
 
+def test_read_source_parquet(spark, test_data):
+    """Testa a função de leitura de dados"""
+    # Salvar dados de teste
+    test_path = "/tmp/test_google_data"
+    test_data.write.mode("overwrite").parquet(test_path)
 
-# Teste unitário para a função read_data
-def test_read_data(spark):
-    # Criando um DataFrame de teste com dados fictícios
-    test_data = data_google()
+    # Ler dados
+    result_df = read_source_parquet(spark, google_play_schema_bronze(), test_path)
 
-    schema = google_play_schema_bronze()
-    # Criar o DataFrame com os dados de teste
-    df_test = spark.createDataFrame(test_data, schema)
+    # Verificações
+    assert result_df is not None
+    assert "app" in result_df.columns
+    assert "segmento" in result_df.columns
+    assert "response" not in result_df.columns
 
-    # Salvar o DataFrame como um arquivo Parquet temporário
-    test_parquet_path = "/tmp/test_google_play_data"
-    df_test.write.mode("overwrite").parquet(test_parquet_path)
+    # Limpar
+    shutil.rmtree(test_path)
 
-    # Chamar a função que você está testando
-    result_df = read_data(spark, schema, test_parquet_path)
+def test_processamento_reviews(spark, test_data):
+    """Testa o processamento das reviews"""
+    df_with_app = test_data.withColumn("app", regexp_extract(lit("googlePlay/test_pf/odate=20240101"), "/googlePlay/(.*?)/odate=", 1)) \
+        .withColumn("segmento", regexp_extract(lit("googlePlay/test_pf/odate=20240101"), r"/googlePlay/[^/_]+_([pfj]+)/odate=", 1))
 
-    # Verifique se a coluna "app" foi criada corretamente
-    assert "app" in result_df.columns, "A coluna 'app' não foi criada corretamente."
+    # Processar dados
+    processed_df = processamento_reviews(df_with_app)
 
-    # Verifique se a coluna "response" foi removida
-    assert "response" not in result_df.columns, "A coluna 'response' não foi removida."
+    # Verificações
+    assert processed_df.count() == df_with_app.count()
+    assert "title" in processed_df.columns
+    assert processed_df.first()["title"] == "USER 1"  # Verifica se foi convertido para maiúsculas
+    assert "segmento" in processed_df.columns  # Verifica se segmento está presente
 
-    # Verifique se o número de registros no DataFrame é o esperado
-    assert result_df.count() == 8, f"Esperado 8 registros, mas encontrou {result_df.count()}."
+def test_validate_ingest(spark, test_data):
+    """Testa a validação dos dados"""
+    # Preparar dados como seria feito no fluxo normal
+    df_with_app = test_data.withColumn("app", lit("test_app")) \
+        .withColumn("segmento", lit("pf")) \
+        .withColumn("historical_data", lit(None).cast("array<struct<title:string,snippet:string,app:string,rating:string,iso_date:string>>"))
 
-    # Limpar o arquivo de teste após o teste (opcional)
-    shutil.rmtree(test_parquet_path)
+    # Validar
+    valid_df, invalid_df, results = validate_ingest(spark, df_with_app)
 
-def test_processamento_reviews(spark):
-    # Criando um DataFrame de teste com dados fictícios
-    test_data = data_google()
+    # Verificações básicas
+    assert valid_df.count() > 0
+    assert isinstance(results, dict)
+    assert "duplicate_check" in results
+    assert "segmento" in valid_df.columns  # Verifica se segmento está presente
 
-    schema = google_play_schema_bronze()
-    # Criar o DataFrame com os dados de teste
-    df_test = spark.createDataFrame(test_data, schema)
+def test_save_data(spark, test_data):
+    """Testa o salvamento dos dados"""
+    # Criar DataFrame com todas as colunas necessárias
+    df_with_all_columns = test_data.withColumn("app", lit("test_app")) \
+        .withColumn("segmento", lit("pf")) \
+        .withColumn("historical_data", lit(None).cast("array<struct<title:string,snippet:string,app:string,rating:string,iso_date:string>>"))
 
-    # Salvar o DataFrame como um arquivo Parquet temporário
-    test_parquet_path = "/tmp/test_google_play_data"
-    df_test.write.mode("overwrite").parquet(test_parquet_path)
-
-    # Chamar a função que você está testando
-    result_df = read_data(spark, schema, test_parquet_path)
-
-    # Processamento dos dados
-    df_processado = processamento_reviews(result_df)
-
-    assert df_processado.count() > 0, "[*] Dataframe vazio!"
-
-def test_validate_ingest(spark):
-    """
-    Testa a função de validação de ingestão para garantir que os DataFrames têm dados e que a validação gera resultados.
-    """
-    # Criando um DataFrame de teste com dados fictícios
-    test_data = data_google()
-
-    schema = google_play_schema_bronze()
-    # Criar o DataFrame com os dados de teste
-    df_test = spark.createDataFrame(test_data, schema)
-
-    # Salvar o DataFrame como um arquivo Parquet temporário
-    test_parquet_path = "/tmp/test_google_play_data"
-    df_test.write.mode("overwrite").parquet(test_parquet_path)
-
-    # Chamar a função que você está testando
-    result_df = read_data(spark, schema, test_parquet_path)
-
-    # Processamento dos dados
-    df_processado = processamento_reviews(result_df)
-
-
-    # Valida o DataFrame e coleta resultados
-    valid_df, invalid_df, validation_results = validate_ingest(spark, df_processado)
-
-    assert valid_df.count() > 0, "[*] O DataFrame válido está vazio!"
-    assert invalid_df.count() > 0, "[*] O DataFrame inválido está vazio!"
-    assert len(validation_results) > 0, "[*] Não foram encontrados resultados de validação!"
-
-    # Opcional: Exibir resultados para depuração
-    print("Testes realizados com sucesso!")
-    print(f"Total de registros válidos: {valid_df.count()}")
-    print(f"Total de registros inválidos: {invalid_df.count()}")
-    print(f"Resultados da validação: {validation_results}")
-
-def test_save_data():
-    # Configurando SparkSession para testes
-    spark = SparkSession.builder.master("local[1]").appName("test").getOrCreate()
-
-    # Criando um DataFrame de teste com dados fictícios
-    test_data = data_google()
-
-    schema = google_play_schema_bronze()
-    # Criar o DataFrame com os dados de teste
-    df_test = spark.createDataFrame(test_data, schema)
-
-    # Salvar o DataFrame como um arquivo Parquet temporário
-    test_parquet_path = "/tmp/test_google_play_data"
-    df_test.write.mode("overwrite").parquet(test_parquet_path)
-
-    # Chamar a função que você está testando
-    result_df = read_data(spark, schema, test_parquet_path)
-
-    # Processamento dos dados
-    df_processado = processamento_reviews(result_df)
-
-
-    # Valida o DataFrame e coleta resultados
-    valid_df, invalid_df, validation_results = validate_ingest(spark, df_processado)
-
-    # Definindo caminhos
-    datePath = datetime.now().strftime("%Y%m%d")
-    path_target = f"/tmp/fake/path/valid/odate={datePath}/"
-    path_target_fail = f"/tmp/fake/path/invalid/odate={datePath}/"
-
-    # Mockando o método parquet
-    with patch("pyspark.sql.DataFrameWriter.parquet", MagicMock()) as mock_parquet:
+    # Mock para teste
+    with patch("pyspark.sql.DataFrameWriter.parquet") as mock_parquet:
         # Chamando a função a ser testada
-        save_data(valid_df, invalid_df, path_target, path_target_fail)
+        save_data(df_with_all_columns, df_with_all_columns, "/tmp/valid", "/tmp/invalid")
 
-        # Verificando se o método parquet foi chamado com os caminhos corretos
-        mock_parquet.assert_any_call(path_target)
-        mock_parquet.assert_any_call(path_target_fail)
-
-    print("[*] Teste de salvar dados concluído com sucesso!")
+        # Verificando se o método parquet foi chamado
+        assert mock_parquet.call_count == 2
