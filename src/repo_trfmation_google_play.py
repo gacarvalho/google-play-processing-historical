@@ -1,172 +1,187 @@
 import os
 import sys
-import logging
 import json
-from pyspark.sql import SparkSession, DataFrame
-from pyspark.sql.functions import input_file_name, regexp_extract
-from pyspark.sql.types import StructType, StructField, StringType, LongType, DoubleType, MapType
+import logging
 from datetime import datetime
-from elasticsearch import Elasticsearch
+from typing import Tuple
+from pyspark.sql import SparkSession, DataFrame
+from pyspark.sql.types import StructType, StructField, StringType, LongType, DoubleType, MapType
+
+from src.schemas.schema_google import google_play_schema_silver
+
+""" Importações para execução local e ambiente de testes """
 try:
-    # Obtem import para cenarios de execuções em ambiente PRE, PRD
     from tools import *
     from metrics import MetricsCollector, validate_ingest
 except ModuleNotFoundError:
-    # Obtem import para cenarios de testes unitarios
     from src.utils.tools import *
     from src.metrics.metrics import MetricsCollector, validate_ingest
 
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Configuração centralizada
+FORMAT = "parquet"
+PATH_BRONZE_BASE = "/santander/bronze/compass/reviews/googlePlay/"
+PATH_SILVER_BASE = "/santander/silver/compass/reviews/googlePlay/"
+PATH_SILVER_FAIL_BASE = "/santander/silver/compass/reviews_fail/googlePlay/"
+ENV_PRE_VALUE = "pre"
+ELASTIC_INDEX_SUCCESS = "compass_dt_datametrics"
+ELASTIC_INDEX_FAIL = "compass_dt_datametrics_fail"
+COMPRESSION_TYPE = "snappy"
+PARTITION_COLUMN = "odate"
 
-def main():
+# Configuração de logging estruturado
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(module)s - %(funcName)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
-    # Capturar argumentos da linha de comando
-    args = sys.argv
+class PipelineConfig:
+    """Configuracao do pipeline"""
+    def __init__(self, env: str):
+        self.env = env
+        self.date_str = datetime.now().strftime("%Y%m%d")
+        self.path_source_pf = f"{PATH_BRONZE_BASE}*_pf/odate={self.date_str}/"
+        self.path_source_pj = f"{PATH_BRONZE_BASE}*_pj/odate={self.date_str}/"
+        self.path_target = PATH_SILVER_BASE
+        self.path_target_fail = PATH_SILVER_FAIL_BASE
 
-    # Verificar se o número correto de argumentos foi passado
-    if len(args) != 2:
-        print("[*] Usage: spark-submit app.py <env> ")
-        sys.exit(1)
-
-    # Criação da sessão Spark
-    spark = spark_session()
-
-    try:
-
-        # Entrada e captura de variaveis e parametros
-        env = args[1]
-
-        # Coleta de métricas
-        metrics_collector = MetricsCollector(spark)
-        metrics_collector.start_collection()
-
-        # Definindo caminhos
-        datePath = datetime.now().strftime("%Y%m%d")
-        pathSource_pf = f"/santander/bronze/compass/reviews/googlePlay/*_pf/odate={datePath}"
-        pathSource_pj = f"/santander/bronze/compass/reviews/googlePlay/*_pj/odate={datePath}"
-        path_target = f"/santander/silver/compass/reviews/googlePlay/odate={datePath}/"
-        path_target_fail = f"/santander/silver/compass/reviews_fail/googlePlay/odate={datePath}/"
-
-        # Definindo o schema para o DataFrame
-        schema = define_schema()
-
-        # Leitura do arquivo Parquet
-        logging.info(f"[*] Iniciando leitura dos path origens.", exc_info=True)
-        df_pf = read_source_parquet(spark, schema, pathSource_pf)
-        df_pj = read_source_parquet(spark, schema, pathSource_pj)
-
-        # Mantém apenas os DataFrames que possuem dados
-        dfs = [df for df in [df_pf, df_pj] if df is not None]
-
-        # Se houver pelo menos um DataFrame com dados, une os resultados
-        if dfs:
-            df = dfs[0] if len(dfs) == 1 else dfs[0].unionByName(dfs[1])
-        else:
-            print("[*] Nenhum dado encontrado! Criando DataFrame vazio...")
-            empty_schema = spark.read.parquet(pathSource_pf).schema
-            df = spark.createDataFrame([], schema=empty_schema)
-
-        # Processamento dos dados
-        df_processado = processamento_reviews(df)
-
-
-        # Validação e separação dos dados
-        valid_df, invalid_df, validation_results = validate_ingest(spark, df_processado)
-
-        if env == "pre":
-            valid_df.printSchema()
-            invalid_df.printSchema()
-
-        # Coleta de métricas após processamento
-        metrics_collector.end_collection()
-        metrics_json = metrics_collector.collect_metrics(valid_df, invalid_df, validation_results, "silver_google_play")
-
-        # Salvando dados e métricas
-        save_data(valid_df, invalid_df, path_target, path_target_fail)
-        save_metrics(metrics_json,valid_df)
-
-    except Exception as e:
-        logging.error(f"[*] An error occurred: {e}", exc_info=True)
-        log_error(e, df)
-
-
-def spark_session():
-    """
-    Cria e retorna uma sessão Spark.
-    """
+def create_spark_session() -> SparkSession:
+    """Criacao da sessao do Spark"""
     try:
         spark = SparkSession.builder \
-            .appName("App Reviews [google play]") \
+            .appName("App Reviews Silver [google play]") \
             .config("spark.jars.packages", "org.apache.spark:spark-measure_2.12:0.16") \
             .config("spark.sql.parquet.enableVectorizedReader", "false") \
             .getOrCreate()
+        logger.info("[*] Spark Session criado com sucesso.")
         return spark
     except Exception as e:
-        logging.error(f"[*] Failed to create SparkSession: {e}", exc_info=True)
+        logger.error(f"[*] Falha ao criar o Spark Session: {e}", exc_info=True)
         raise
 
-def define_schema() -> StructType:
-    """
-    Define o schema para os dados dos reviews.
-    """
-    return StructType([
-        StructField("avatar", StringType(), True),
-        StructField("date", StringType(), True),
-        StructField("id", StringType(), True),
-        StructField("iso_date", StringType(), True),
-        StructField("likes", LongType(), True),
-        StructField("rating", DoubleType(), True),
-        StructField("response", MapType(StringType(), StringType(), True), True),
-        StructField("snippet", StringType(), True),
-        StructField("title", StringType(), True)
-    ])
 
+def read_and_union_data(spark: SparkSession, config: PipelineConfig, schema: StructType) -> DataFrame:
+    """Lê e une os dados das fontes PF e PJ"""
+    logger.info("[*] Iniciando leitura dos paths de origem.")
 
+    # Definindo o schema para o DataFrame
+    schema = define_schema()
 
-def save_data(valid_df: DataFrame, invalid_df: DataFrame, path_target: str, path_target_fail: str):
-    """
-    Salva os dados válidos e inválidos nos caminhos apropriados.
-    """
     try:
-        save_dataframe(valid_df, path_target, "valido")
-        save_dataframe(invalid_df, path_target_fail, "invalido")
+        df_pf = read_source_parquet(spark, schema, config.path_source_pf)
+        df_pj = read_source_parquet(spark, schema, config.path_source_pj)
+
+        dfs = [df for df in [df_pf, df_pj] if df is not None]
+
+        if not dfs:
+            logger.warning("[*] Nenhum dado encontrado - criando DataFrame vazio.")
+            empty_schema = spark.read.parquet(config.path_source_pf).schema
+            return spark.createDataFrame([], schema=empty_schema)
+
+        return dfs[0] if len(dfs) == 1 else dfs[0].unionByName(dfs[1])
     except Exception as e:
-        logging.error(f"[*] Erro ao salvar os dados: {e}", exc_info=True)
-        log_error(e, valid_df)
-        log_error(e, invalid_df)
+        logger.error("[*] Falha ao ler e unir dados.", exc_info=True)
         raise
 
-def save_metrics(metrics_json,df):
-    """
-    Salva as métricas.
-    """
-
-    ES_HOST = "http://elasticsearch:9200"
-    ES_INDEX = "compass_dt_datametrics"
-    ES_USER = os.environ["ES_USER"]
-    ES_PASS = os.environ["ES_PASS"]
-
-    # Conectar ao Elasticsearch
-    es = Elasticsearch(
-        [ES_HOST],
-        basic_auth=(ES_USER, ES_PASS)
-    )
+def process_and_validate_data(spark: SparkSession, df: DataFrame, config: PipelineConfig) -> Tuple[DataFrame, DataFrame, dict]:
+    """Processa e valida os dados"""
+    metrics_collector = MetricsCollector(spark)
+    metrics_collector.start_collection()
 
     try:
-        # Converter JSON em dicionário
-        metrics_data = json.loads(metrics_json)
+        logger.info("[*] Processando dados de avaliações")
+        df_processed = processing_reviews(df)
 
-        # Inserir no Elasticsearch
-        response = es.index(index=ES_INDEX, document=metrics_data)
+        logger.info("[*] Validando ingestão dos dados.")
+        valid_df, invalid_df, validation_results = validate_ingest(spark, df_processed)
 
-        logging.info(f"[*] Métricas da aplicação salvas no Elasticsearch: {response}")
-    except json.JSONDecodeError as e:
-        logging.error(f"[*] Erro ao processar métricas: {e}", exc_info=True)
-        log_error(e, df)
+        if config.env == ENV_PRE_VALUE:
+            logger.info("[*] Dados de amostra: valid_df")
+            valid_df.take(10)
+            logger.info("[*] Dados de amostra: invalid_df")
+            invalid_df.take(10)
 
+        return valid_df, invalid_df, validation_results
+    finally:
+        metrics_collector.end_collection()
+
+def save_output_data(valid_df: DataFrame, invalid_df: DataFrame, config: PipelineConfig) -> None:
+    """Salvar dados de saida com tratamento de erros adequado"""
+    try:
+        logger.info(f"[*] Salvando dados validos em {config.path_target}")
+        save_dataframe(
+            df=valid_df,
+            path=config.path_target,
+            label="valido",
+            schema=google_play_schema_silver(),
+            partition_column=PARTITION_COLUMN,
+            compression=COMPRESSION_TYPE
+        )
+
+        logger.info(f"[*] Salvando dados invalidos em {config.path_target_fail}")
+        save_dataframe(
+            df=invalid_df,
+            path=config.path_target_fail,
+            label="invalido",
+            partition_column=PARTITION_COLUMN,
+            compression=COMPRESSION_TYPE
+        )
     except Exception as e:
-        logging.error(f"[*] Erro ao salvar métricas no Elasticsearch: {e}", exc_info=True)
+        logger.error("[*] Falha ao salvar os dados de saida", exc_info=True)
+        raise
+
+def execute_pipeline(spark: SparkSession, config: PipelineConfig) -> None:
+    """Executa o pipeline completo"""
+    try:
+        schema = define_schema()
+        source_df = read_and_union_data(spark, config, schema)
+        valid_df, invalid_df, validation_results = process_and_validate_data(spark, source_df, config)
+        save_output_data(valid_df, invalid_df, config)
+
+        # Metrics collection and saving
+        metrics_collector = MetricsCollector(spark)
+        metrics_json = metrics_collector.collect_metrics(
+            valid_df, invalid_df, validation_results, "silver_google_play"
+        )
+
+        save_metrics(
+            metrics_type='success',
+            index=ELASTIC_INDEX_SUCCESS,
+            df=valid_df,
+            metrics_data=metrics_json
+        )
+
+        logger.info(f"[*] Pipeline metrics: {metrics_json}")
+        logger.info("[*] Pipeline executado com sucesso.")
+    except Exception as e:
+        logger.error("[*] Pipeline executado com falha!", exc_info=True)
+        save_metrics(
+            metrics_type="fail",
+            index=ELASTIC_INDEX_FAIL,
+            error=e
+        )
+        raise
+
+def main():
+
+    if len(sys.argv) != 2:
+        logger.error("Usage: spark-submit app.py <env>")
+        sys.exit(1)
+
+    env = sys.argv[1]
+    config = PipelineConfig(env)
+    spark = None
+
+    try:
+        spark = create_spark_session()
+        execute_pipeline(spark, config)
+    except Exception as e:
+        logger.error(f"Erro no pipeline: {e}", exc_info=True)
+        sys.exit(1)
+    finally:
+        if spark:
+            spark.stop()
 
 if __name__ == "__main__":
     main()

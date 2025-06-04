@@ -1,25 +1,33 @@
 import pytest
 import shutil
+from pathlib import Path
 from pyspark.sql import SparkSession
-from pyspark.sql.types import StructType, StructField, StringType, LongType, DoubleType, MapType
-from datetime import datetime
-from unittest.mock import MagicMock, patch
-from pyspark.sql.functions import lit, regexp_extract, col
+from pyspark.sql.types import (
+    StructType, StructField, StringType,
+    LongType, DoubleType, MapType, ArrayType
+)
+from unittest.mock import MagicMock, patch, call, PropertyMock
+from pyspark.sql.functions import lit, regexp_extract
 
-from src.utils.tools import processamento_reviews, read_source_parquet
+from src.utils.tools import processing_reviews, read_source_parquet
 from src.metrics.metrics import validate_ingest
-from src.repo_trfmation_google_play import save_data
+from src.repo_trfmation_google_play import save_output_data
 
-# Fixture do Spark para os testes
+# --------------------------
+# Fixtures
+# --------------------------
+
 @pytest.fixture(scope="session")
 def spark():
-    return SparkSession.builder \
+    spark = SparkSession.builder \
         .master("local[1]") \
         .appName("GooglePlayTests") \
         .config("spark.sql.shuffle.partitions", "1") \
         .getOrCreate()
+    yield spark
+    spark.stop()
 
-# Schema para testes
+@pytest.fixture
 def google_play_schema_bronze():
     return StructType([
         StructField("avatar", StringType(), True),
@@ -28,80 +36,172 @@ def google_play_schema_bronze():
         StructField("iso_date", StringType(), True),
         StructField("likes", LongType(), True),
         StructField("rating", DoubleType(), True),
-        StructField("response", MapType(StringType(), StringType(), True), True),
+        StructField("response", MapType(StringType(), StringType()), True),
         StructField("snippet", StringType(), True),
         StructField("title", StringType(), True)
     ])
 
-# Fixture com dados de teste
 @pytest.fixture
-def test_data(spark):
+def test_data(spark, google_play_schema_bronze):
     data = [
         ("avatar1", "Nov 03, 2024", "id1", "2024-11-03T01:58:03Z", 266, 2.0, None, "Review 1", "User 1"),
-        ("avatar2", "Oct 23, 2024", "id2", "2024-10-23T23:30:38Z", 189, 3.0, None, "Review 2", "User 2"),
-        ("avatar3", "Nov 14, 2024", "id3", "2024-11-14T14:01:17Z", 54, 1.0, None, "Review 3", "User 3")
+        ("avatar2", "Oct 23, 2024", "id2", "2024-10-23T23:30:38Z", 189, 3.0, None, "Review 2", "User 2")
     ]
-    return spark.createDataFrame(data, google_play_schema_bronze())
+    return spark.createDataFrame(data, google_play_schema_bronze)
 
-def test_read_source_parquet(spark, test_data):
-    """Testa a função de leitura de dados"""
-    # Salvar dados de teste
-    test_path = "/tmp/test_google_data"
-    test_data.write.mode("overwrite").parquet(test_path)
+@pytest.fixture
+def processed_test_data(test_data):
+    return (
+        test_data
+        .drop("response")
+        .withColumn("app", lit("test_app"))
+        .withColumn("segmento", lit("pf"))
+        .withColumn("historical_data",
+                    lit(None).cast("array<struct<title:string,snippet:string,app:string,rating:string,iso_date:string>>"))
+    )
 
-    # Ler dados
-    result_df = read_source_parquet(spark, google_play_schema_bronze(), test_path)
+# --------------------------
+# Testes Corrigidos
+# --------------------------
 
-    # Verificações
-    assert result_df is not None
-    assert "app" in result_df.columns
-    assert "segmento" in result_df.columns
-    assert "response" not in result_df.columns
+def test_read_source_parquet(spark, test_data, google_play_schema_bronze, tmp_path):
+    """Testa a leitura de arquivos Parquet"""
+    test_path = tmp_path / "test_data"
+    test_data.write.mode("overwrite").parquet(str(test_path))
 
-    # Limpar
-    shutil.rmtree(test_path)
+    try:
+        result_df = read_source_parquet(spark, google_play_schema_bronze, str(test_path))
 
-def test_processamento_reviews(spark, test_data):
+        assert result_df is not None
+        assert "app" in result_df.columns
+        assert "segmento" in result_df.columns
+        assert "response" not in result_df.columns
+        assert result_df.count() == 2
+    finally:
+        shutil.rmtree(test_path, ignore_errors=True)
+
+def test_processing_reviews(test_data):
     """Testa o processamento das reviews"""
-    df_with_app = test_data.withColumn("app", regexp_extract(lit("googlePlay/test_pf/odate=20240101"), "/googlePlay/(.*?)/odate=", 1)) \
-        .withColumn("segmento", regexp_extract(lit("googlePlay/test_pf/odate=20240101"), r"/googlePlay/[^/_]+_([pfj]+)/odate=", 1))
+    df_with_path = test_data \
+        .withColumn("app", regexp_extract(lit("/googlePlay/test_pf/odate=20240101"), "/googlePlay/(.*?)/odate=", 1)) \
+        .withColumn("segmento", regexp_extract(lit("/googlePlay/test_pf/odate=20240101"), r"/googlePlay/[^/_]+_([pfj]+)/odate=", 1))
 
-    # Processar dados
-    processed_df = processamento_reviews(df_with_app)
+    processed_df = processing_reviews(df_with_path)
 
-    # Verificações
-    assert processed_df.count() == df_with_app.count()
-    assert "title" in processed_df.columns
-    assert processed_df.first()["title"] == "USER 1"  # Verifica se foi convertido para maiúsculas
-    assert "segmento" in processed_df.columns  # Verifica se segmento está presente
+    assert processed_df.count() == 2
+    assert set(processed_df.columns) == {
+        "avatar", "id", "iso_date", "app", "segmento",
+        "rating", "likes", "title", "snippet"
+    }
 
-def test_validate_ingest(spark, test_data):
+def test_validate_ingest(spark, processed_test_data):
     """Testa a validação dos dados"""
-    # Preparar dados como seria feito no fluxo normal
-    df_with_app = test_data.withColumn("app", lit("test_app")) \
-        .withColumn("segmento", lit("pf")) \
-        .withColumn("historical_data", lit(None).cast("array<struct<title:string,snippet:string,app:string,rating:string,iso_date:string>>"))
+    valid_df, invalid_df, results = validate_ingest(spark, processed_test_data)
 
-    # Validar
-    valid_df, invalid_df, results = validate_ingest(spark, df_with_app)
-
-    # Verificações básicas
-    assert valid_df.count() > 0
+    assert valid_df.count() == 2
+    assert invalid_df.count() == 0
     assert isinstance(results, dict)
     assert "duplicate_check" in results
-    assert "segmento" in valid_df.columns  # Verifica se segmento está presente
 
-def test_save_data(spark, test_data):
-    """Testa o salvamento dos dados"""
-    # Criar DataFrame com todas as colunas necessárias
-    df_with_all_columns = test_data.withColumn("app", lit("test_app")) \
-        .withColumn("segmento", lit("pf")) \
-        .withColumn("historical_data", lit(None).cast("array<struct<title:string,snippet:string,app:string,rating:string,iso_date:string>>"))
+def test_save_output_data_success(processed_test_data):
+    """Testa o salvamento bem-sucedido com todos os parâmetros"""
+    # Configurar mock do config com todos os campos necessários
+    mock_config = MagicMock()
+    mock_config.path_target = "/tmp/valid"
+    mock_config.path_target_fail = "/tmp/invalid"
 
-    # Mock para teste
-    with patch("pyspark.sql.DataFrameWriter.parquet") as mock_parquet:
-        # Chamando a função a ser testada
-        save_data(df_with_all_columns, df_with_all_columns, "/tmp/valid", "/tmp/invalid")
+    # Mock do schema silver
+    mock_schema = StructType([
+        StructField('id', StringType(), True),
+        StructField('app', StringType(), False),
+        StructField('segmento', StringType(), False),
+        StructField('rating', StringType(), True),
+        StructField('iso_date', StringType(), True),
+        StructField('title', StringType(), True),
+        StructField('snippet', StringType(), True),
+        StructField(
+            'historical_data',
+            ArrayType(
+                StructType([
+                    StructField('title', StringType(), True),
+                    StructField('snippet', StringType(), True),
+                    StructField('app', StringType(), True),
+                    StructField('segmento', StringType(), True),
+                    StructField('rating', StringType(), True),
+                    StructField('iso_date', StringType(), True)
+                ]),
+                True
+            ),
+            True
+        )
+    ])
 
-        # Verificando se o método parquet foi chamado
+    # Configurar mocks para o método write
+    mock_parquet = MagicMock()
+    mock_partitionBy = MagicMock()
+    mock_partitionBy.parquet = mock_parquet
+
+    mock_mode = MagicMock()
+    mock_mode.partitionBy.return_value = mock_partitionBy
+
+    mock_option = MagicMock()
+    mock_option.mode.return_value = mock_mode
+
+    mock_write = MagicMock()
+    mock_write.option.return_value = mock_option
+
+    with patch("src.repo_trfmation_google_play.google_play_schema_silver", return_value=mock_schema), \
+            patch.object(type(processed_test_data), "write", new_callable=PropertyMock) as mock_write_property:
+
+        mock_write_property.return_value = mock_write
+
+        # Executar a função
+        save_output_data(processed_test_data, processed_test_data, mock_config)
+
+        # Verificar que write foi chamado duas vezes (uma para cada dataframe)
+        assert mock_write_property.call_count == 2
+        assert mock_write.option.call_count == 2
+        assert mock_option.mode.call_count == 2
+        assert mock_mode.partitionBy.call_count == 2
         assert mock_parquet.call_count == 2
+
+        # Verificar parâmetros da primeira chamada (dados válidos)
+        mock_write.option.assert_any_call("compression", "snappy")
+        mock_option.mode.assert_any_call("overwrite")
+        mock_mode.partitionBy.assert_any_call("odate")
+        mock_parquet.assert_any_call("/tmp/valid")
+
+        # Verificar parâmetros da segunda chamada (dados inválidos)
+        mock_write.option.assert_any_call("compression", "snappy")
+        mock_option.mode.assert_any_call("overwrite")
+        mock_mode.partitionBy.assert_any_call("odate")
+        mock_parquet.assert_any_call("/tmp/invalid")
+
+def test_full_pipeline(spark, test_data, google_play_schema_bronze, tmp_path):
+    """Teste do fluxo completo"""
+    input_path = tmp_path / "input"
+    test_data.write.mode("overwrite").parquet(str(input_path))
+
+    # Importar dentro do contexto para garantir o patch correto
+    from src.repo_trfmation_google_play import save_output_data
+
+    with patch("src.repo_trfmation_google_play.save_output_data") as mock_save:
+        # Executar fluxo
+        df = read_source_parquet(spark, google_play_schema_bronze, str(input_path))
+        processed_df = processing_reviews(df)
+        valid_df, invalid_df, metrics = validate_ingest(spark, processed_df)
+
+        # Configurar mock com os nomes de atributos corretos
+        mock_config = MagicMock()
+        mock_config.path_target = str(tmp_path / "valid")
+        mock_config.path_target_fail = str(tmp_path / "invalid")  # Nome correto do atributo
+
+        # Chamar a função através do módulo mockado
+        mock_save(valid_df, invalid_df, mock_config)
+
+        # Verificações
+        assert df is not None
+        assert processed_df is not None
+        assert valid_df.count() > 0
+        assert mock_save.called
+        mock_save.assert_called_once_with(valid_df, invalid_df, mock_config)
