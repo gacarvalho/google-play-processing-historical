@@ -6,16 +6,15 @@ from datetime import datetime
 from typing import Tuple
 from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.types import StructType, StructField, StringType, LongType, DoubleType, MapType
-
-from src.schemas.schema_google import google_play_schema_silver
-
 """ Importações para execução local e ambiente de testes """
 try:
     from tools import *
     from metrics import MetricsCollector, validate_ingest
+    from schema_google import google_play_schema_silver
 except ModuleNotFoundError:
     from src.utils.tools import *
     from src.metrics.metrics import MetricsCollector, validate_ingest
+    from src.schemas.schema_google import google_play_schema_silver
 
 
 # Configuração centralizada
