@@ -217,6 +217,92 @@ def save_dataframe(
         logger.error(f"[*] Detalhes do erro: {str(e)}\n{traceback.format_exc()}")
         return False
 
+def save_metrics(
+        metrics_type: str,
+        index: str,
+        error: Optional[Exception] = None,
+        df: Optional[DataFrame] = None,
+        metrics_data: Optional[Union[dict, str]] = None
+) -> None:
+    """
+    Salva métricas no Elasticsearch com estruturas específicas.
+
+    Args:
+        metrics_type: 'success' ou 'fail'
+        index: Nome do índice no Elasticsearch
+        error: Objeto de exceção (para tipo 'fail')
+        df: DataFrame (para extrair segmentos)
+        metrics_data: Dados das métricas (para tipo 'success')
+
+    Raises:
+        ValueError: Se os parâmetros forem inválidos
+    """
+    metrics_type = metrics_type.lower()
+
+    if metrics_type not in ('success', 'fail'):
+        raise ValueError("[*] O tipo deve ser 'success' ou 'fail'")
+
+    if metrics_type == 'fail' and not error:
+        raise ValueError("[*] Para tipo 'fail', o parâmetro 'error' é obrigatório")
+
+    if metrics_type == 'success' and not metrics_data:
+        raise ValueError("[*] Para tipo 'success', 'metrics_data' é obrigatório")
+
+    ES_HOST = os.getenv("ES_HOST", "http://elasticsearch:9200")
+    ES_USER = os.getenv("ES_USER")
+    ES_PASS = os.getenv("ES_PASS")
+
+    if not all([ES_USER, ES_PASS]):
+        raise ValueError("[*] Credenciais do Elasticsearch não configuradas")
+
+    if metrics_type == 'fail':
+        try:
+            segmentos_unicos = [row["segmento"] for row in df.select("segmento").distinct().collect()] if df else ["UNKNOWN_CLIENT"]
+        except Exception:
+            logger.warning("[*] Não foi possível extrair segmentos. Usando 'UNKNOWN_CLIENT'.")
+            segmentos_unicos = ["UNKNOWN_CLIENT"]
+
+        document = {
+            "timestamp": datetime.now().isoformat(),
+            "layer": "silver",
+            "project": "compass",
+            "job": "google_play_reviews",
+            "priority": "0",
+            "tower": "SBBR_COMPASS",
+            "client": segmentos_unicos,
+            "error": str(error) if error else "Erro desconhecido"
+        }
+    else:
+        if isinstance(metrics_data, str):
+            try:
+                document = json.loads(metrics_data)
+            except json.JSONDecodeError as e:
+                raise ValueError("[*] metrics_data não é um JSON válido") from e
+        else:
+            document = metrics_data
+
+    try:
+        es = Elasticsearch(
+            hosts=[ES_HOST],
+            basic_auth=(ES_USER, ES_PASS),
+            request_timeout=30
+        )
+
+        response = es.index(
+            index=index,
+            document=document
+        )
+
+        logger.info(f"[*] Métricas salvas com sucesso no índice {index}. ID: {response['_id']}")
+        return response
+
+    except Exception as es_error:
+        logger.error(f"[*] Falha ao salvar no Elasticsearch: {str(es_error)}")
+        raise
+    except Exception as e:
+        logger.error(f"[*] Erro inesperado: {str(e)}")
+        raise
+
 def path_exists() -> bool:
     """
     Verifica se o caminho de dados históricos existe no HDFS.
