@@ -57,6 +57,11 @@ def create_spark_session() -> SparkSession:
         return spark
     except Exception as e:
         logger.error(f"[*] Falha ao criar o Spark Session: {e}", exc_info=True)
+        save_metrics(
+            metrics_type="fail",
+            index=ELASTIC_INDEX_FAIL,
+            error=e
+        )
         raise
 
 
@@ -81,12 +86,15 @@ def read_and_union_data(spark: SparkSession, config: PipelineConfig) -> DataFram
         return dfs[0] if len(dfs) == 1 else dfs[0].unionByName(dfs[1])
     except Exception as e:
         logger.error("[*] Falha ao ler e unir dados.", exc_info=True)
+        save_metrics(
+            metrics_type="fail",
+            index=ELASTIC_INDEX_FAIL,
+            error=e
+        )
         raise
 
 def process_and_validate_data(spark: SparkSession, df: DataFrame, config: PipelineConfig) -> Tuple[DataFrame, DataFrame, dict]:
     """Processa e valida os dados"""
-    metrics_collector = MetricsCollector(spark)
-    metrics_collector.start_collection()
 
     try:
         logger.info("[*] Processando dados de avaliações")
@@ -102,8 +110,15 @@ def process_and_validate_data(spark: SparkSession, df: DataFrame, config: Pipeli
             invalid_df.take(10)
 
         return valid_df, invalid_df, validation_results
-    finally:
-        metrics_collector.end_collection()
+    except Exception as e:
+        logger.error("[*] Falha ao processar a funcao: process_and_validate_data", exc_info=True)
+        save_metrics(
+            metrics_type="fail",
+            index=ELASTIC_INDEX_FAIL,
+            error=e
+        )
+        raise
+
 
 def save_output_data(valid_df: DataFrame, invalid_df: DataFrame, config: PipelineConfig) -> None:
     """Salvar dados de saida com tratamento de erros adequado"""
@@ -128,17 +143,26 @@ def save_output_data(valid_df: DataFrame, invalid_df: DataFrame, config: Pipelin
         )
     except Exception as e:
         logger.error("[*] Falha ao salvar os dados de saida", exc_info=True)
+        save_metrics(
+            metrics_type="fail",
+            index=ELASTIC_INDEX_FAIL,
+            error=e
+        )
         raise
 
 def execute_pipeline(spark: SparkSession, config: PipelineConfig) -> None:
     """Executa o pipeline completo"""
     try:
+
+        metrics_collector = MetricsCollector(spark)
+        metrics_collector.start_collection()
+
         source_df = read_and_union_data(spark, config)
         valid_df, invalid_df, validation_results = process_and_validate_data(spark, source_df, config)
         save_output_data(valid_df, invalid_df, config)
 
-        # Metrics collection and saving
-        metrics_collector = MetricsCollector(spark)
+        metrics_collector.end_collection()
+
         metrics_json = metrics_collector.collect_metrics(
             valid_df, invalid_df, validation_results, "silver_google_play"
         )
@@ -176,6 +200,11 @@ def main():
         execute_pipeline(spark, config)
     except Exception as e:
         logger.error(f"Erro no pipeline: {e}", exc_info=True)
+        save_metrics(
+            metrics_type="fail",
+            index=ELASTIC_INDEX_FAIL,
+            error=e
+        )
         sys.exit(1)
     finally:
         if spark:
