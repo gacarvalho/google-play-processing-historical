@@ -380,6 +380,7 @@ def processing_old_new(spark: SparkSession, df: DataFrame) -> DataFrame:
     if path_exists():
         df_historical = (
             spark.read.schema(historical_schema)
+            .option("basePath", historical_data_path)
             .parquet(f"{historical_data_path}/odate=*")
             .withColumn("odate", to_date(col("odate"), "yyyyMMdd"))
             .filter(col("odate") < lit(current_date))
