@@ -86,6 +86,23 @@ def read_source_parquet(
         logger.error(f"[*] Erro inesperado ao ler {path}: {str(e)}")
         return None
 
+def define_schema() -> StructType:
+    """
+    Define o schema para os dados dos reviews.
+    """
+    return StructType([
+        StructField("avatar", StringType(), True),
+        StructField("date", StringType(), True),
+        StructField("id", StringType(), True),
+        StructField("iso_date", StringType(), True),
+        StructField("likes", LongType(), True),
+        StructField("rating", DoubleType(), True),
+        StructField("response", MapType(StringType(), StringType(), True), True),
+        StructField("snippet", StringType(), True),
+        StructField("title", StringType(), True)
+    ])
+
+
 def processing_reviews(df: DataFrame) -> DataFrame:
     """
     Processa o DataFrame de reviews aplicando transformações básicas.

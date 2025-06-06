@@ -60,7 +60,7 @@ def create_spark_session() -> SparkSession:
         raise
 
 
-def read_and_union_data(spark: SparkSession, config: PipelineConfig, schema: StructType) -> DataFrame:
+def read_and_union_data(spark: SparkSession, config: PipelineConfig) -> DataFrame:
     """Lê e une os dados das fontes PF e PJ"""
     logger.info("[*] Iniciando leitura dos paths de origem.")
 
@@ -133,8 +133,7 @@ def save_output_data(valid_df: DataFrame, invalid_df: DataFrame, config: Pipelin
 def execute_pipeline(spark: SparkSession, config: PipelineConfig) -> None:
     """Executa o pipeline completo"""
     try:
-        schema = define_schema()
-        source_df = read_and_union_data(spark, config, schema)
+        source_df = read_and_union_data(spark, config)
         valid_df, invalid_df, validation_results = process_and_validate_data(spark, source_df, config)
         save_output_data(valid_df, invalid_df, config)
 
